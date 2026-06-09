@@ -189,11 +189,25 @@ in
       # Builders
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      # Build fixture containers from NixOS inventory (includes both NixOS and CLAB clients)
-      clientContainers = buildFixtureContainers {
+      # Resolve CLAB inventory for CLAB-side endpoint clients
+      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
+
+      # NixOS-side endpoint clients (from NixOS inventory, scoped to this host)
+      nixosContainers = buildFixtureContainers {
         inherit hostName labSource builders;
         resolvedInventoryPath = resolvedInventoryPath;
       };
+
+      # CLAB-side endpoint clients (from CLAB inventory, all hosts)
+      clabContainers = buildFixtureContainers {
+        inherit labSource builders;
+        allHosts = true;
+        resolvedInventoryPath = resolvedClabInventoryPath;
+      };
+
+      # Merge both access networks' clients
+      clientContainers =
+        lib.recursiveUpdate nixosContainers clabContainers;
 
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
