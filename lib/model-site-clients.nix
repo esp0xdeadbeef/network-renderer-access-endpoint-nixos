@@ -5,13 +5,15 @@
 , pkgs
 , runtimeTargets ? { }
 , siteName
+, enterpriseName ? builtins.head (builtins.attrNames intent)
 , endpointNames ? null
 , endpointAddressing ? "static"
 ,
 }:
 
 let
-  site = intent.esp.${siteName};
+  enterprise = intent.${enterpriseName};
+  site = enterprise.${siteName};
 
   addrPart = cidr: builtins.elemAt (lib.splitString "/" cidr) 0;
   prefixPart = cidr: builtins.elemAt (lib.splitString "/" cidr) 1;

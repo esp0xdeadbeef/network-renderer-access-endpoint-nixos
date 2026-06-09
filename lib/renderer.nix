@@ -39,7 +39,7 @@
 
       labIntent = import resolvedIntentPath;
       labInventory = import resolvedInventoryPath;
-      hasEnterpriseIntent = builtins.hasAttr "esp" labIntent;
+      hasEnterpriseIntent = builtins.attrNames labIntent != [ ];
 
       # Build host data via CPM client fixtures - this gives us runtime targets
       clientFixtureModule =
