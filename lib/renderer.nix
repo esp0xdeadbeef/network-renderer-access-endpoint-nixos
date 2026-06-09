@@ -137,10 +137,10 @@ let
       if dhcpConfig != null then {
         networkConfig = {
           DHCPServer = "yes";
-          Address = dhcpConfig.address;
           IPMasquerade = "both";
           IPForward = "yes";
         };
+        address = [ dhcpConfig.address ];
       } else { };
   in
     lib.recursiveUpdate baseConfig dhcpOverlay;
