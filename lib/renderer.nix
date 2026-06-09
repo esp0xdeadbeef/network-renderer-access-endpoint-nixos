@@ -8,7 +8,8 @@
 let
   # Build endpoint containers from inventory fixture data
   buildFixtureContainers =
-    { hostName
+    { hostName ? null
+    , allHosts ? false
     , labSource
     , resolvedInventoryPath
     , builders
@@ -17,9 +18,14 @@ let
       labInventory = import resolvedInventoryPath;
       labDeployment = labInventory.deployment or { };
       labHosts = labDeployment.hosts or { };
-      hostRecord = labHosts.${hostName} or { };
-      hostHat = hostRecord.hat or { };
-      endpointClients = hostHat.endpointClients or { };
+      # Collect endpoint clients from either the specified host or ALL hosts
+      endpointClients =
+        if allHosts then
+          lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues labHosts)
+        else if hostName != null then
+          (labHosts.${hostName} or {}).hat.endpointClients or {}
+        else
+          {};
 
       endpointBuildData = builtins.mapAttrs
         (name: endpoint:
@@ -189,30 +195,16 @@ in
         resolvedInventoryPath = resolvedInventoryPath;
       };
 
-      # Build CLAB fixture containers
+      # Build CLAB fixture containers (from ALL hosts in CLAB inventory)
       clabContainers = buildFixtureContainers {
-        inherit hostName labSource builders;
+        inherit labSource builders;
+        allHosts = true;
         resolvedInventoryPath = resolvedClabInventoryPath;
       };
 
-      # Merge both host's containers (CLAB containers may have 'clab-' prefix)
-      # Also generate model clients for CLAB access networks
-      labClabInventory = import resolvedClabInventoryPath;
-      clabModelContainers = lib.optionals hasEnterpriseIntent [
-        (import ./model-site-clients.nix {
-          inherit builders lib pkgs;
-          intent = labIntent;
-          inventory = labClabInventory;
-          runtimeTargets = { };
-          siteName = "site-b";
-          endpointAddressing = "dhcp";
-        })
-      ];
-
+      # Merge both host's containers
       clientContainers =
-        lib.foldl' lib.recursiveUpdate { } (
-          [ nixosContainers clabContainers ] ++ clabModelContainers
-        );
+        lib.recursiveUpdate nixosContainers clabContainers;
 
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
