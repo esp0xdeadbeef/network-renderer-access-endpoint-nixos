@@ -237,12 +237,8 @@ in
       networking.useHostResolvConf = lib.mkForce false;
       services.resolved.enable = lib.mkForce true;
 
-      systemd.network.netdevs = lib.mkDefault (
-        (config.systemd.network.netdevs or { }) // lib.genAttrs effectiveBridges mkClientBridge
-      );
-      systemd.network.networks = lib.mkDefault (
-        (config.systemd.network.networks or { }) // lib.genAttrs effectiveBridges mkClientBridgeNetwork
-      );
+      systemd.network.netdevs = lib.genAttrs effectiveBridges mkClientBridge;
+      systemd.network.networks = lib.genAttrs effectiveBridges mkClientBridgeNetwork;
 
       containers = clientContainers;
 
