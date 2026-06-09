@@ -195,10 +195,9 @@ in
         resolvedInventoryPath = resolvedInventoryPath;
       };
 
-      # Build CLAB fixture containers (from ALL hosts in CLAB inventory)
+      # Build CLAB fixture containers
       clabContainers = buildFixtureContainers {
-        inherit labSource builders;
-        allHosts = true;
+        inherit hostName labSource builders;
         resolvedInventoryPath = resolvedClabInventoryPath;
       };
 
