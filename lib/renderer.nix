@@ -128,7 +128,7 @@ let
         RequiredForOnline = "no";
       };
       networkConfig = {
-        ConfigureWithoutCarrier = true;
+        ConfigureWithoutCarrier = "yes";
         DHCP = "no";
         IPv6AcceptRA = false;
       };
@@ -143,7 +143,13 @@ let
         address = [ dhcpConfig.address ];
       } else { };
   in
-    lib.recursiveUpdate baseConfig dhcpOverlay;
+    if dhcpConfig != null then
+      baseConfig // {
+        networkConfig = baseConfig.networkConfig // dhcpOverlay.networkConfig;
+        address = dhcpOverlay.address;
+      }
+    else
+      baseConfig;
 
 in
 {
