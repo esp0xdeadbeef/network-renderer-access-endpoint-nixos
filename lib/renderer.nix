@@ -120,18 +120,30 @@ let
   };
 
   # Helper to create bridge network configs
-  mkClientBridgeNetwork = name: {
-    matchConfig.Name = name;
-    linkConfig = {
-      ActivationPolicy = "always-up";
-      RequiredForOnline = "no";
+  mkClientBridgeNetwork = name: dhcpConfig: let
+    baseConfig = {
+      matchConfig.Name = name;
+      linkConfig = {
+        ActivationPolicy = "always-up";
+        RequiredForOnline = "no";
+      };
+      networkConfig = {
+        ConfigureWithoutCarrier = true;
+        DHCP = "no";
+        IPv6AcceptRA = false;
+      };
     };
-    networkConfig = {
-      ConfigureWithoutCarrier = true;
-      DHCP = "no";
-      IPv6AcceptRA = false;
-    };
-  };
+    dhcpOverlay =
+      if dhcpConfig != null then {
+        networkConfig = {
+          DHCPServer = "yes";
+          Address = dhcpConfig.address;
+          IPMasquerade = "both";
+          IPForward = "yes";
+        };
+      } else { };
+  in
+    lib.recursiveUpdate baseConfig dhcpOverlay;
 
 in
 {
@@ -217,6 +229,96 @@ in
       );
       effectiveBridges = builtins.filter (b: b != null) clientBridges;
 
+      # --- SDS-025 bridge DHCP provisioning ---
+      # Parse tenant prefixes from intent for DHCP server address derivation
+      enterpriseName = builtins.head (builtins.attrNames labIntent);
+      enterprise = labIntent.${enterpriseName} or { };
+      site = enterprise.${siteName} or { };
+      sitePrefixes = if site ? ownership && site.ownership ? prefixes then site.ownership.prefixes else [ ];
+      tenantPrefixes = builtins.listToAttrs (
+        map
+          (prefix: {
+            name = prefix.name;
+            value = prefix;
+          })
+          (builtins.filter (prefix: (if prefix ? kind then prefix.kind else null) == "tenant") sitePrefixes)
+      );
+
+      # Compute tenant prefix for a given tenant name
+      tenantPrefixFor = tenant:
+        if builtins.hasAttr tenant tenantPrefixes then
+          tenantPrefixes.${tenant}
+        else
+          null;
+
+      # Determine which bridges have DHCP-assigned fixtures and derive subnet
+      bridgeDhcpMap = builtins.listToAttrs (
+        builtins.map
+          (bridgeName:
+            let
+              # Find all containers on this bridge
+              containersOnBridge = builtins.filter
+                (c: (c.value.hostBridge or null) == bridgeName)
+                (lib.attrsToList clientContainers);
+              # Check if any container on this bridge is DHCP-assigned
+              hasDhcp = builtins.any
+                (c:
+                  let
+                    endpointName = c.name;
+                    # Re-derive assignment from inventory (same logic as buildFixtureContainers)
+                    allEndpointClients =
+                      let
+                        nixosInv = import resolvedInventoryPath;
+                        nixosHosts = nixosInv.deployment.hosts or { };
+                        nixosClients = (nixosHosts.${hostName} or {}).hat.endpointClients or {};
+                        clabInv = import resolvedClabInventoryPath;
+                        clabHosts = clabInv.deployment.hosts or { };
+                        clabClients = lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues clabHosts);
+                        allClients = nixosClients // clabClients;
+                      in
+                        allClients;
+                    endpoint = allClients.${endpointName} or { };
+                    assignment = endpoint.assignment or "dhcp";
+                  in
+                    assignment == "dhcp"
+                )
+                containersOnBridge;
+              # Derive tenant from first container (all on same bridge share tenant)
+              firstContainer = builtins.head containersOnBridge;
+              firstEndpointName = firstContainer.name;
+              allEndpointClients2 =
+                let
+                  nixosInv2 = import resolvedInventoryPath;
+                  nixosHosts2 = nixosInv2.deployment.hosts or { };
+                  nixosClients2 = (nixosHosts2.${hostName} or {}).hat.endpointClients or {};
+                  clabInv2 = import resolvedClabInventoryPath;
+                  clabHosts2 = clabInv2.deployment.hosts or { };
+                  clabClients2 = lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues clabHosts2);
+                in
+                  nixosClients2 // clabClients2;
+              firstEndpoint = allEndpointClients2.${firstEndpointName} or { };
+              tenant = firstEndpoint.tenant or bridgeName;
+              prefix = tenantPrefixFor tenant;
+              dhcpConfig =
+                if hasDhcp && prefix != null then {
+                  address = "${
+                    let
+                      cidr = prefix.ipv4 or null;
+                      addrPart = builtins.elemAt (lib.splitString "/" cidr) 0;
+                      prefixLen = builtins.elemAt (lib.splitString "/" cidr) 1;
+                      octets = lib.splitString "." addrPart;
+                      gateway = "${builtins.elemAt octets 0}.${builtins.elemAt octets 1}.${builtins.elemAt octets 2}.1/${prefixLen}";
+                    in gateway
+                  }";
+                } else null;
+            in {
+              name = bridgeName;
+              value = dhcpConfig;
+            }
+          )
+          effectiveBridges
+      );
+
     in
     {
       imports = [
@@ -246,7 +348,9 @@ in
       services.resolved.enable = lib.mkForce true;
 
       systemd.network.netdevs = lib.genAttrs effectiveBridges mkClientBridge;
-      systemd.network.networks = lib.genAttrs effectiveBridges mkClientBridgeNetwork;
+      systemd.network.networks = lib.mapAttrs
+        (bridgeName: dhcpConfig: mkClientBridgeNetwork bridgeName dhcpConfig)
+        bridgeDhcpMap;
 
       containers = clientContainers;
 
