@@ -61,62 +61,98 @@
       # Builders for endpoint containers
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      # --- Path 1: Inventory fixture endpoint clients (HAT test clients) ---
-      hatEndpointClients =
-        (((labInventory.deployment or { }).hosts or { }).${hostName} or { }).hat.endpointClients or { };
+      # --- Inventory fixture endpoint clients (HAT test clients) ---
+      labDeployment = labInventory.deployment or { };
+      labHosts = labDeployment.hosts or { };
+      hostRecord = labHosts.${hostName} or { };
+      hostHat = hostRecord.hat or { };
+      hatEndpointClients = hostHat.endpointClients or { };
 
-      mkHatEndpointContainer =
-        name: endpoint:
-        let
-          tenant = endpoint.tenant or (throw "access-endpoint-renderer HAT endpoint ${name} has no tenant");
-          assignment = endpoint.assignment or "dhcp";
-          bridge = endpoint.bridge or tenant;
-          staticIpv4 = endpoint.ipv4 or [ ];
-          staticIpv6 = endpoint.ipv6 or [ ];
-          gateway4 = endpoint.gateway4 or null;
-          gateway6 = endpoint.gateway6 or null;
-        in
-        if assignment == "dhcp" then
-          {
-            autoStart = true;
-            privateNetwork = true;
-            hostBridge = bridge;
-            config = builders.mkDhcpEndpoint {
-              hostname = name;
+      # Pre-compute endpoint data to avoid `or` in nested lets
+      endpointBuildData = builtins.mapAttrs
+        (name: endpoint:
+          let
+            tenant =
+              if builtins.hasAttr "tenant" endpoint then
+                endpoint.tenant
+              else
+                throw "access-endpoint-renderer HAT endpoint ${name} has no tenant";
+            assignment =
+              if builtins.hasAttr "assignment" endpoint then
+                endpoint.assignment
+              else
+                "dhcp";
+            bridge =
+              if builtins.hasAttr "bridge" endpoint then
+                endpoint.bridge
+              else
+                tenant;
+            staticIpv4 =
+              if builtins.hasAttr "ipv4" endpoint then
+                endpoint.ipv4
+              else
+                [ ];
+            staticIpv6 =
+              if builtins.hasAttr "ipv6" endpoint then
+                endpoint.ipv6
+              else
+                [ ];
+            rawGateway4 =
+              if builtins.hasAttr "gateway4" endpoint then
+                endpoint.gateway4
+              else
+                null;
+            rawGateway6 =
+              if builtins.hasAttr "gateway6" endpoint then
+                endpoint.gateway6
+              else
+                null;
+            containerConfig =
+              if assignment == "dhcp" then
+                builders.mkDhcpEndpoint {
+                  hostname = name;
+                }
+              else if assignment == "static-ipv4-or-ipv6-client" || assignment == "static" then
+                let
+                  gw4 =
+                    if rawGateway4 != null then
+                      rawGateway4
+                    else
+                      throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway4";
+                  gw6 =
+                    if rawGateway6 != null then
+                      rawGateway6
+                    else
+                      throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway6";
+                  addr4 =
+                    if staticIpv4 != [ ] then
+                      builtins.head staticIpv4
+                    else
+                      throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv4 address";
+                  addr6 =
+                    if staticIpv6 != [ ] then
+                      builtins.head staticIpv6
+                    else
+                      throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv6 address";
+                in
+                builders.mkStaticEndpoint {
+                  hostname = name;
+                  inherit addr4 gw4 addr6 gw6;
+                }
+              else
+                throw "access-endpoint-renderer HAT endpoint ${name} has unsupported assignment ${assignment}";
+            containerAttrs = {
+              autoStart = true;
+              privateNetwork = true;
+              hostBridge = bridge;
+              config = containerConfig;
             };
-          }
-        else if assignment == "static-ipv4-or-ipv6-client" || assignment == "static" then
-          {
-            autoStart = true;
-            privateNetwork = true;
-            hostBridge = bridge;
-            config = builders.mkStaticEndpoint {
-              hostname = name;
-              addr4 =
-                if staticIpv4 == [ ] then
-                  throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv4 address"
-                else
-                  builtins.head staticIpv4;
-              gw4 =
-                gateway4 or (throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway4");
-              addr6 =
-                if staticIpv6 == [ ] then
-                  throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv6 address"
-                else
-                  builtins.head staticIpv6;
-              gw6 =
-                gateway6 or (throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway6");
-            };
-          }
-        else
-          throw "access-endpoint-renderer HAT endpoint ${name} has unsupported assignment ${assignment}";
+          in
+          containerAttrs
+        )
+        hatEndpointClients;
 
-      hatEndpointModules =
-        lib.optional (hatEndpointClients != { }) (
-          builtins.mapAttrs mkHatEndpointContainer hatEndpointClients
-        );
-
-      # --- Path 2: Model-driven client containers (from intent endpoints) ---
+      # --- Model-driven client containers (from intent endpoints) ---
       modelClientModules = lib.optionals hasEnterpriseIntent [
         (import ./model-site-clients.nix {
           inherit builders lib pkgs;
@@ -129,9 +165,10 @@
       ];
 
       # Merge all container modules
-      clientContainers = lib.foldl' lib.recursiveUpdate { } (
-        modelClientModules ++ hatEndpointModules
-      );
+      clientContainers =
+        lib.recursiveUpdate
+          (lib.foldl' lib.recursiveUpdate { } modelClientModules)
+          endpointBuildData;
 
       # Helper to create bridge netdevs
       mkClientBridge = name: {
@@ -158,7 +195,9 @@
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
         builtins.map
-          (container: container.hostBridge or null)
+          (container:
+            if container ? hostBridge then container.hostBridge else null
+          )
           (builtins.attrValues clientContainers)
       );
       effectiveBridges = builtins.filter (b: b != null) clientBridges;
@@ -215,10 +254,6 @@
         {
           assertion = endpointAddressing == "static" || endpointAddressing == "dhcp";
           message = "access-endpoint renderer: endpointAddressing must be either \"static\" or \"dhcp\"";
-        }
-        {
-          assertion = hasEnterpriseIntent;
-          message = "access-endpoint renderer: intent.nix must define an enterprise scope";
         }
       ];
     };
