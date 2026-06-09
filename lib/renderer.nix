@@ -128,26 +128,24 @@ let
         RequiredForOnline = "no";
       };
       networkConfig = {
-        ConfigureWithoutCarrier = "yes";
+        ConfigureWithoutCarrier = true;
         DHCP = "no";
         IPv6AcceptRA = false;
       };
     };
-    dhcpOverlay =
-      if dhcpConfig != null then {
-        networkConfig = {
-          DHCPServer = "yes";
-          IPMasquerade = "both";
-          IPForward = "yes";
-        };
-        address = [ dhcpConfig.address ];
-      } else { };
+    dhcpExtra =
+      if dhcpConfig != null then ''
+        [Network]
+        DHCPServer=yes
+        IPMasquerade=both
+        IPForward=yes
+
+        [Address]
+        Address=${dhcpConfig.address}
+      '' else "";
   in
     if dhcpConfig != null then
-      baseConfig // {
-        networkConfig = baseConfig.networkConfig // dhcpOverlay.networkConfig;
-        address = dhcpOverlay.address;
-      }
+      baseConfig // { extraConfig = dhcpExtra; }
     else
       baseConfig;
 
