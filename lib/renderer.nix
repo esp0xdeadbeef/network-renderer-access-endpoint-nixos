@@ -189,21 +189,11 @@ in
       # Builders
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      # Build NixOS fixture containers
-      nixosContainers = buildFixtureContainers {
+      # Build fixture containers from NixOS inventory (includes both NixOS and CLAB clients)
+      clientContainers = buildFixtureContainers {
         inherit hostName labSource builders;
         resolvedInventoryPath = resolvedInventoryPath;
       };
-
-      # Build CLAB fixture containers
-      clabContainers = buildFixtureContainers {
-        inherit hostName labSource builders;
-        resolvedInventoryPath = resolvedClabInventoryPath;
-      };
-
-      # Merge both host's containers
-      clientContainers =
-        lib.recursiveUpdate nixosContainers clabContainers;
 
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
