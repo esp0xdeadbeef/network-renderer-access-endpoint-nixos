@@ -5,70 +5,22 @@
 , network-labs
 }:
 
-{
-  hostModuleFromPaths =
-    { hostName ? "s-router-test-clients"
-    , labSource ? "active-lab"
-    , intentPath ? null
-    , inventoryPath ? null
-    , clientsPath ? null
-    , routingSopsPath ? null
-    , mode ? "test"
-    , siteName ? "site-a"
-    , endpointNames ? null
-    , endpointAddressing ? "static"
-    , selectorFile ? null
-    , ...
+let
+  # Build endpoint containers from inventory fixture data
+  buildFixtureContainers =
+    { hostName
+    , labSource
+    , resolvedInventoryPath
+    , builders
     }:
-
-    { config, ... }:
-
     let
-      # Resolve actual paths from network-labs
-      resolvedIntentPath =
-        if intentPath != null then
-          intentPath
-        else
-          "${network-labs}/${labSource}/intent.nix";
-
-      resolvedInventoryPath =
-        if inventoryPath != null then
-          inventoryPath
-        else
-          "${network-labs}/${labSource}/inventory-nixos.nix";
-
-      labIntent = import resolvedIntentPath;
       labInventory = import resolvedInventoryPath;
-      hasEnterpriseIntent = builtins.attrNames labIntent != [ ];
-
-      # Build host data via CPM client fixtures - this gives us runtime targets
-      clientFixtureModule =
-        cpm.clientFixtures.hostModuleFromPaths {
-          intentPath = resolvedIntentPath;
-          inventoryPath = resolvedInventoryPath;
-          sopsPath =
-            if routingSopsPath != null then
-              routingSopsPath
-            else
-              "${network-labs}/${labSource}/sops.nix";
-          fixture = {
-            kind = "emulated-clients";
-            hostName = "s-router-test-clients";
-            inherit siteName;
-          };
-        };
-
-      # Builders for endpoint containers
-      builders = import ./client-builders.nix { inherit lib pkgs; };
-
-      # --- Inventory fixture endpoint clients (HAT test clients) ---
       labDeployment = labInventory.deployment or { };
       labHosts = labDeployment.hosts or { };
       hostRecord = labHosts.${hostName} or { };
       hostHat = hostRecord.hat or { };
-      hatEndpointClients = hostHat.endpointClients or { };
+      endpointClients = hostHat.endpointClients or { };
 
-      # Pre-compute endpoint data to avoid `or` in nested lets
       endpointBuildData = builtins.mapAttrs
         (name: endpoint:
           let
@@ -76,7 +28,7 @@
               if builtins.hasAttr "tenant" endpoint then
                 endpoint.tenant
               else
-                throw "access-endpoint-renderer HAT endpoint ${name} has no tenant";
+                throw "access-endpoint-renderer: endpoint ${name} has no tenant";
             assignment =
               if builtins.hasAttr "assignment" endpoint then
                 endpoint.assignment
@@ -118,79 +70,134 @@
                     if rawGateway4 != null then
                       rawGateway4
                     else
-                      throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway4";
+                      throw "access-endpoint-renderer: static endpoint ${name} has no gateway4";
                   gw6 =
                     if rawGateway6 != null then
                       rawGateway6
                     else
-                      throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway6";
+                      throw "access-endpoint-renderer: static endpoint ${name} has no gateway6";
                   addr4 =
                     if staticIpv4 != [ ] then
                       builtins.head staticIpv4
                     else
-                      throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv4 address";
+                      throw "access-endpoint-renderer: static endpoint ${name} has no ipv4 address";
                   addr6 =
                     if staticIpv6 != [ ] then
                       builtins.head staticIpv6
                     else
-                      throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv6 address";
+                      throw "access-endpoint-renderer: static endpoint ${name} has no ipv6 address";
                 in
                 builders.mkStaticEndpoint {
                   hostname = name;
                   inherit addr4 gw4 addr6 gw6;
                 }
               else
-                throw "access-endpoint-renderer HAT endpoint ${name} has unsupported assignment ${assignment}";
-            containerAttrs = {
-              autoStart = true;
-              privateNetwork = true;
-              hostBridge = bridge;
-              config = containerConfig;
-            };
+                throw "access-endpoint-renderer: endpoint ${name} has unsupported assignment ${assignment}";
           in
-          containerAttrs
+          {
+            autoStart = true;
+            privateNetwork = true;
+            hostBridge = bridge;
+            config = containerConfig;
+          }
         )
-        hatEndpointClients;
+        endpointClients;
+    in
+    endpointBuildData;
 
-      # --- Model-driven client containers (from intent endpoints) ---
-      modelClientModules = lib.optionals hasEnterpriseIntent [
-        (import ./model-site-clients.nix {
-          inherit builders lib pkgs;
-          intent = labIntent;
-          inventory = labInventory;
-          runtimeTargets = { };
-          inherit siteName;
-          inherit endpointAddressing;
-        })
-      ];
+  # Helper to create bridge netdevs
+  mkClientBridge = name: {
+    netdevConfig = {
+      Kind = "bridge";
+      Name = name;
+    };
+  };
 
-      # Merge all container modules
+  # Helper to create bridge network configs
+  mkClientBridgeNetwork = name: {
+    matchConfig.Name = name;
+    linkConfig = {
+      ActivationPolicy = "always-up";
+      RequiredForOnline = "no";
+    };
+    networkConfig = {
+      ConfigureWithoutCarrier = true;
+      DHCP = "no";
+      IPv6AcceptRA = false;
+    };
+  };
+
+in
+{
+  hostModuleFromPaths =
+    { hostName ? "s-router-test-clients"
+    , labSource ? "active-lab"
+    , intentPath ? null
+    , inventoryPath ? null
+    , clientsPath ? null
+    , routingSopsPath ? null
+    , mode ? "test"
+    , siteName ? "site-a"
+    , endpointAddressing ? "static"
+    , ...
+    }:
+
+    { config, ... }:
+
+    let
+      resolvedIntentPath =
+        if intentPath != null then
+          intentPath
+        else
+          "${network-labs}/${labSource}/intent.nix";
+
+      resolvedInventoryPath =
+        if inventoryPath != null then
+          inventoryPath
+        else
+          "${network-labs}/${labSource}/inventory-nixos.nix";
+
+      # Also resolve CLAB inventory for dual-host endpoints
+      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
+
+      labIntent = import resolvedIntentPath;
+      hasEnterpriseIntent = builtins.attrNames labIntent != [ ];
+
+      # Build CPM client fixture module
+      clientFixtureModule =
+        cpm.clientFixtures.hostModuleFromPaths {
+          intentPath = resolvedIntentPath;
+          inventoryPath = resolvedInventoryPath;
+          sopsPath =
+            if routingSopsPath != null then
+              routingSopsPath
+            else
+              "${network-labs}/${labSource}/sops.nix";
+          fixture = {
+            kind = "emulated-clients";
+            hostName = "s-router-test-clients";
+            inherit siteName;
+          };
+        };
+
+      # Builders
+      builders = import ./client-builders.nix { inherit lib pkgs; };
+
+      # Build NixOS fixture containers
+      nixosContainers = buildFixtureContainers {
+        inherit hostName labSource builders;
+        resolvedInventoryPath = resolvedInventoryPath;
+      };
+
+      # Build CLAB fixture containers
+      clabContainers = buildFixtureContainers {
+        inherit hostName labSource builders;
+        resolvedInventoryPath = resolvedClabInventoryPath;
+      };
+
+      # Merge both host's containers (CLAB containers may have 'clab-' prefix)
       clientContainers =
-        lib.recursiveUpdate
-          (lib.foldl' lib.recursiveUpdate { } modelClientModules)
-          endpointBuildData;
-
-      # Helper to create bridge netdevs
-      mkClientBridge = name: {
-        netdevConfig = {
-          Kind = "bridge";
-          Name = name;
-        };
-      };
-
-      # Helper to create bridge network configs
-      mkClientBridgeNetwork = name: {
-        matchConfig.Name = name;
-        linkConfig = {
-          ActivationPolicy = "always-up";
-          RequiredForOnline = "no";
-        };
-        networkConfig = {
-          ConfigureWithoutCarrier = true;
-          DHCP = "no";
-          IPv6AcceptRA = false;
-        };
-      };
+        lib.recursiveUpdate nixosContainers clabContainers;
 
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
@@ -243,17 +250,12 @@
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAqEmMbztRhj2zE1dXf5Z+Ow7mXXXE6sNAG4/hrIOrmD deadbeef@codex-jail"
       ];
 
-      # Remove the dummy service, we have real containers now
       systemd.services.access-endpoint-renderer-dummy.enable = lib.mkForce false;
 
       assertions = [
         {
           assertion = mode == "test" || mode == "production";
           message = "access-endpoint renderer: mode must be either \"test\" or \"production\"";
-        }
-        {
-          assertion = endpointAddressing == "static" || endpointAddressing == "dhcp";
-          message = "access-endpoint renderer: endpointAddressing must be either \"static\" or \"dhcp\"";
         }
       ];
     };
