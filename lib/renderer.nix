@@ -164,9 +164,6 @@ in
           "${network-labs}/${labSource}/inventory-nixos.nix";
 
       # Also resolve CLAB inventory for dual-host endpoints
-      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
-
-      labIntent = import resolvedIntentPath;
       hasEnterpriseIntent = builtins.attrNames labIntent != [ ];
 
       # Build CPM client fixture module
