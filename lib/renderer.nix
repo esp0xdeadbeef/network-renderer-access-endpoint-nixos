@@ -197,11 +197,12 @@ in
 
       # Merge both host's containers (CLAB containers may have 'clab-' prefix)
       # Also generate model clients for CLAB access networks
+      labClabInventory = import resolvedClabInventoryPath;
       clabModelContainers = lib.optionals hasEnterpriseIntent [
         (import ./model-site-clients.nix {
           inherit builders lib pkgs;
           intent = labIntent;
-          inventory = labInventory;
+          inventory = labClabInventory;
           runtimeTargets = { };
           siteName = "site-b";
           endpointAddressing = "dhcp";
