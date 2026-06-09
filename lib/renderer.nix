@@ -196,8 +196,22 @@ in
       };
 
       # Merge both host's containers (CLAB containers may have 'clab-' prefix)
+      # Also generate model clients for CLAB access networks
+      clabModelContainers = lib.optionals hasEnterpriseIntent [
+        (import ./model-site-clients.nix {
+          inherit builders lib pkgs;
+          intent = labIntent;
+          inventory = labInventory;
+          runtimeTargets = { };
+          siteName = "site-b";
+          endpointAddressing = "dhcp";
+        })
+      ];
+
       clientContainers =
-        lib.recursiveUpdate nixosContainers clabContainers;
+        lib.foldl' lib.recursiveUpdate { } (
+          [ nixosContainers clabContainers ] ++ clabModelContainers
+        );
 
       # Collect unique bridge names from client containers
       clientBridges = lib.unique (
