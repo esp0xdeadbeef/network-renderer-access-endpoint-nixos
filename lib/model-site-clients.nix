@@ -21,17 +21,19 @@ let
   hasPrefix = prefix: value: lib.hasPrefix prefix value;
   removePrefix = prefix: value: lib.removePrefix prefix value;
 
+  invNodes = inventory.realization.nodes or { };
+
   accessNodes = lib.filterAttrs
     (
       _: node:
-        (node.logicalNode.site or null) == siteName
-        && hasPrefix "${siteName}-router-access-" (node.logicalNode.name or "")
+        (if node ? logicalNode && node.logicalNode ? site then node.logicalNode.site else null) == siteName
+        && hasPrefix "${siteName}-router-access-" (if node ? logicalNode && node.logicalNode ? name then node.logicalNode.name else "")
     )
-    inventory.realization.nodes;
+    invNodes;
 
   tenantPortNames =
     node:
-    builtins.filter (name: hasPrefix "tenant-" name) (builtins.attrNames (node.ports or { }));
+    builtins.filter (name: hasPrefix "tenant-" name) (builtins.attrNames (if node ? ports then node.ports else { }));
 
   tenantFromPortName = removePrefix "tenant-";
 
@@ -39,25 +41,30 @@ let
     map tenantFromPortName (lib.concatMap tenantPortNames (builtins.attrValues accessNodes))
   );
 
+  sitePrefixes = if site ? ownership && site.ownership ? prefixes then site.ownership.prefixes else [ ];
+
   tenantPrefixes = builtins.listToAttrs (
     map
       (prefix: {
         name = prefix.name;
         value = prefix;
       })
-      (builtins.filter (prefix: (prefix.kind or null) == "tenant") (site.ownership.prefixes or [ ]))
+      (builtins.filter (prefix: (if prefix ? kind then prefix.kind else null) == "tenant") sitePrefixes)
   );
 
-  tenantPrefixFor =
+  # Pre-compute tenant prefix lookup to avoid `or` in nested functions
+  tenantPrefixLookup =
     tenant:
+    if builtins.hasAttr tenant tenantPrefixes then
       tenantPrefixes.${tenant}
-        or (throw "access-endpoint-renderer: no ${siteName} tenant prefix intent for ${tenant}");
+    else
+      throw "access-endpoint-renderer: no ${siteName} tenant prefix intent for ${tenant}";
 
   accessNodeEntryForTenant =
     tenant:
     let
       portName = "tenant-${tenant}";
-      matches = builtins.filter (entry: builtins.hasAttr portName (entry.value.ports or { })) (
+      matches = builtins.filter (entry: builtins.hasAttr portName (if entry.value ? ports then entry.value.ports else { })) (
         lib.attrsToList accessNodes
       );
     in
@@ -69,13 +76,14 @@ let
   firstAdvertisement =
     target: group: interfaceName:
     let
-      entries = (target.advertisements or { }).${group} or [ ];
+      targetAds = if target ? advertisements then target.advertisements else { };
+      entries = if builtins.hasAttr group targetAds then targetAds.${group} else [ ];
       matches = builtins.filter
         (
           entry:
-          (entry.bindInterface or null) == interfaceName
-          || (entry.interface or null) == interfaceName
-          || (entry.routerInterface.logicalInterface or null) == interfaceName
+            (if entry ? bindInterface then entry.bindInterface else null) == interfaceName
+            || (if entry ? interface then entry.interface else null) == interfaceName
+            || (if entry ? routerInterface && entry.routerInterface ? logicalInterface then entry.routerInterface.logicalInterface else null) == interfaceName
         )
         entries;
     in
@@ -85,50 +93,75 @@ let
     advertisement: family:
     if advertisement == null then
       null
+    else if advertisement ? routerAddress then
+      advertisement.routerAddress
+    else if advertisement ? authoritativeRouterAddress then
+      advertisement.authoritativeRouterAddress
+    else if family == 4 then
+      if advertisement ? router then advertisement.router
+      else if advertisement ? routerInterface && advertisement.routerInterface ? address4 then advertisement.routerInterface.address4
+      else null
     else
-      advertisement.routerAddress or advertisement.authoritativeRouterAddress or (
-        if family == 4 then
-          advertisement.router or advertisement.routerInterface.address4 or null
-        else
-          advertisement.routerInterface.address6 or null
-      );
+      if advertisement ? routerInterface && advertisement.routerInterface ? address6 then advertisement.routerInterface.address6
+      else null;
+
+  # Pre-compute tenant runtime data to avoid `or` in nested functions
+  allTenantRuntime = builtins.listToAttrs (
+    map
+      (tenant:
+        let
+          nodeEntry = accessNodeEntryForTenant tenant;
+          node = nodeEntry.value;
+          port = node.ports."tenant-${tenant}";
+          prefix = tenantPrefixLookup tenant;
+          runtimeTargetKey = "esp.${siteName}.${nodeEntry.name}";
+          target =
+            if builtins.hasAttr runtimeTargetKey runtimeTargets then
+              runtimeTargets.${runtimeTargetKey}
+            else
+              throw "access-endpoint-renderer: no renderer runtime target for ${runtimeTargetKey}";
+          dhcp4 = firstAdvertisement target "dhcp4" port.logicalInterface;
+          ipv6Ra = firstAdvertisement target "ipv6Ra" port.logicalInterface;
+          gw4 = advertisementGateway dhcp4 4;
+          gw6 = advertisementGateway ipv6Ra 6;
+          hasRuntimeRoutedIPv6 =
+            ipv6Ra != null
+            && ipv6Ra ? routedPrefixes
+            && builtins.isList ipv6Ra.routedPrefixes
+            && ipv6Ra.routedPrefixes != [ ];
+        in
+        {
+          name = tenant;
+          value = {
+            bridge = port.attach.bridge;
+            gw4 =
+              if gw4 != null then
+                gw4
+              else
+                throw "access-endpoint-renderer: no rendered IPv4 router advertisement for ${nodeEntry.name}.${port.logicalInterface}";
+            gw6 =
+              if gw6 != null then
+                gw6
+              else
+                throw "access-endpoint-renderer: no rendered IPv6 router advertisement for ${nodeEntry.name}.${port.logicalInterface}";
+            prefix4 = prefixPart prefix.ipv4;
+            prefix6 = prefixPart prefix.ipv6;
+            ipv6AcceptRA = hasRuntimeRoutedIPv6;
+          };
+        }
+      )
+      accessTenants
+  );
 
   tenantRuntime =
     tenant:
-    let
-      nodeEntry = accessNodeEntryForTenant tenant;
-      node = nodeEntry.value;
-      port = node.ports."tenant-${tenant}";
-      prefix = tenantPrefixFor tenant;
-      runtimeTargetKey = "esp.${siteName}.${nodeEntry.name}";
-      target =
-        runtimeTargets.${runtimeTargetKey}
-          or (throw "access-endpoint-renderer: no renderer runtime target for ${runtimeTargetKey}");
-      dhcp4 = firstAdvertisement target "dhcp4" port.logicalInterface;
-      ipv6Ra = firstAdvertisement target "ipv6Ra" port.logicalInterface;
-      gw4 = advertisementGateway dhcp4 4;
-      gw6 = advertisementGateway ipv6Ra 6;
-      hasRuntimeRoutedIPv6 =
-        ipv6Ra != null
-        && builtins.isList (ipv6Ra.routedPrefixes or null)
-        && ipv6Ra.routedPrefixes != [ ];
-    in
-    {
-      bridge = port.attach.bridge;
-      gw4 =
-        if gw4 == null then
-          throw "access-endpoint-renderer: no rendered IPv4 router advertisement for ${nodeEntry.name}.${port.logicalInterface}"
-        else
-          gw4;
-      gw6 =
-        if gw6 == null then
-          throw "access-endpoint-renderer: no rendered IPv6 router advertisement for ${nodeEntry.name}.${port.logicalInterface}"
-        else
-          gw6;
-      prefix4 = prefixPart prefix.ipv4;
-      prefix6 = prefixPart prefix.ipv6;
-      ipv6AcceptRA = hasRuntimeRoutedIPv6;
-    };
+    if builtins.hasAttr tenant allTenantRuntime then
+      allTenantRuntime.${tenant}
+    else
+      throw "access-endpoint-renderer: no runtime data for tenant ${tenant}";
+
+  siteCommunicationContract = if site ? communicationContract then site.communicationContract else { };
+  siteTrafficTypes = if siteCommunicationContract ? trafficTypes then siteCommunicationContract.trafficTypes else [ ];
 
   trafficTypes = builtins.listToAttrs (
     map
@@ -136,28 +169,28 @@ let
         name = trafficType.name;
         value = trafficType;
       })
-      (site.communicationContract.trafficTypes or [ ])
+      siteTrafficTypes
   );
+
+  siteServices = if siteCommunicationContract ? services then siteCommunicationContract.services else [ ];
 
   portsForProvider =
     provider:
     let
-      providerServices = builtins.filter (service: builtins.elem provider (service.providers or [ ])) (
-        site.communicationContract.services or [ ]
-      );
+      providerServices = builtins.filter (service: builtins.elem provider (if service ? providers then service.providers else [ ])) siteServices;
       matches = lib.concatMap
         (
           service:
           let
-            trafficType = trafficTypes.${service.trafficType} or { match = [ ]; };
+            trafficType = if builtins.hasAttr service.trafficType trafficTypes then trafficTypes.${service.trafficType} else { match = [ ]; };
           in
-            trafficType.match or [ ]
+            if trafficType ? match then trafficType.match else [ ]
         )
         providerServices;
       portsForProto =
         proto:
         lib.unique (
-          lib.concatMap (match: if (match.proto or null) == proto then match.dports or [ ] else [ ]) matches
+          lib.concatMap (match: if (if match ? proto then match.proto else null) == proto then (if match ? dports then match.dports else [ ]) else [ ]) matches
         );
     in
     {
@@ -206,11 +239,15 @@ let
     endpointName:
     if hasPrefix "${siteName}-" endpointName then endpointName else "${siteName}-${endpointName}";
 
+  siteEndpoints = if site ? ownership && site.ownership ? endpoints then site.ownership.endpoints else [ ];
+
+  invEndpoints = if inventory ? endpoints then inventory.endpoints else { };
+
   endpointContainer =
     endpoint:
     let
       runtime = tenantRuntime endpoint.tenant;
-      endpointAddrs = inventory.endpoints.${endpoint.name};
+      endpointAddrs = invEndpoints.${endpoint.name};
       addr4 = builtins.head endpointAddrs.ipv4;
       addr6 = builtins.head endpointAddrs.ipv6;
       ports = portsForProvider endpoint.name;
@@ -252,7 +289,11 @@ let
     endpoint:
     let
       runtime = tenantRuntime endpoint.tenant;
-      endpointAddrs = inventory.endpoints.${endpoint.name} or null;
+      endpointAddrs =
+        if builtins.hasAttr endpoint.name invEndpoints then
+          invEndpoints.${endpoint.name}
+        else
+          null;
     in
     endpoint.kind == "host"
     && builtins.elem endpoint.tenant accessTenants
@@ -265,5 +306,5 @@ let
     endpointNames == null || builtins.elem endpoint.name endpointNames;
 in
 builtins.listToAttrs (
-  map endpointContainer (builtins.filter (endpoint: endpointIsSelected endpoint && endpointIsHostContainer endpoint) site.ownership.endpoints)
+  map endpointContainer (builtins.filter (endpoint: endpointIsSelected endpoint && endpointIsHostContainer endpoint) siteEndpoints)
 )
