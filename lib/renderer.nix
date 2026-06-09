@@ -147,8 +147,7 @@ let
     else
       baseConfig;
 
-in
-{
+  # ----- hostModuleFromPaths: the full NixOS module builder -----
   hostModuleFromPaths =
     { hostName ? "s-router-test-clients"
     , labSource ? "active-lab"
@@ -368,4 +367,35 @@ in
         }
       ];
     };
+
+  # ----- hostModule: standard renderer interface wrapping hostModuleFromPaths -----
+  hostModule = rendererInput:
+    let
+      hostName = rendererInput.hostName or "s-router-test-clients";
+      labSource = rendererInput.labSource or "active-lab";
+      resolvedIntentPath =
+        if rendererInput ? intent && rendererInput.intent != null then
+          rendererInput.intent
+        else
+          "${network-labs}/${labSource}/intent.nix";
+      resolvedInventoryPath =
+        if rendererInput ? inventory && rendererInput.inventory != null then
+          rendererInput.inventory
+        else
+          "${network-labs}/${labSource}/inventory-nixos.nix";
+    in
+    hostModuleFromPaths {
+      inherit hostName labSource;
+      intentPath = resolvedIntentPath;
+      inventoryPath = resolvedInventoryPath;
+      clientsPath = rendererInput.clients or null;
+      routingSopsPath = rendererInput.sops or null;
+      mode = rendererInput.mode or "test";
+      siteName = rendererInput.siteName or "site-a";
+      endpointAddressing = rendererInput.endpointAddressing or "static";
+    };
+
+in
+{
+  inherit hostModule hostModuleFromPaths;
 }
