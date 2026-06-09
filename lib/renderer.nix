@@ -14,7 +14,7 @@
     , clientsPath ? null
     , routingSopsPath ? null
     , mode ? "test"
-    , siteName ? "nixos"
+    , siteName ? "site-a"
     , endpointNames ? null
     , endpointAddressing ? "static"
     , selectorFile ? null
@@ -58,13 +58,65 @@
           };
         };
 
-      # The CPM module provides _module.args.clientFixture and _module.args.renderedHostNetwork
-      # We need to extract these at eval time
-
       # Builders for endpoint containers
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      # Generate model-driven client containers (from intent endpoints)
+      # --- Path 1: Inventory fixture endpoint clients (HAT test clients) ---
+      hatEndpointClients =
+        (((labInventory.deployment or { }).hosts or { }).${hostName} or { }).hat.endpointClients or { };
+
+      mkHatEndpointContainer =
+        name: endpoint:
+        let
+          tenant = endpoint.tenant or (throw "access-endpoint-renderer HAT endpoint ${name} has no tenant");
+          assignment = endpoint.assignment or "dhcp";
+          bridge = endpoint.bridge or tenant;
+          staticIpv4 = endpoint.ipv4 or [ ];
+          staticIpv6 = endpoint.ipv6 or [ ];
+          gateway4 = endpoint.gateway4 or null;
+          gateway6 = endpoint.gateway6 or null;
+        in
+        if assignment == "dhcp" then
+          {
+            autoStart = true;
+            privateNetwork = true;
+            hostBridge = bridge;
+            config = builders.mkDhcpEndpoint {
+              hostname = name;
+            };
+          }
+        else if assignment == "static-ipv4-or-ipv6-client" || assignment == "static" then
+          {
+            autoStart = true;
+            privateNetwork = true;
+            hostBridge = bridge;
+            config = builders.mkStaticEndpoint {
+              hostname = name;
+              addr4 =
+                if staticIpv4 == [ ] then
+                  throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv4 address"
+                else
+                  builtins.head staticIpv4;
+              gw4 =
+                gateway4 or (throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway4");
+              addr6 =
+                if staticIpv6 == [ ] then
+                  throw "access-endpoint-renderer HAT static endpoint ${name} has no ipv6 address"
+                else
+                  builtins.head staticIpv6;
+              gw6 =
+                gateway6 or (throw "access-endpoint-renderer HAT static endpoint ${name} has no gateway6");
+            };
+          }
+        else
+          throw "access-endpoint-renderer HAT endpoint ${name} has unsupported assignment ${assignment}";
+
+      hatEndpointModules =
+        lib.optional (hatEndpointClients != { }) (
+          builtins.mapAttrs mkHatEndpointContainer hatEndpointClients
+        );
+
+      # --- Path 2: Model-driven client containers (from intent endpoints) ---
       modelClientModules = lib.optionals hasEnterpriseIntent [
         (import ./model-site-clients.nix {
           inherit builders lib pkgs;
@@ -77,7 +129,9 @@
       ];
 
       # Merge all container modules
-      clientContainers = lib.foldl' lib.recursiveUpdate { } modelClientModules;
+      clientContainers = lib.foldl' lib.recursiveUpdate { } (
+        modelClientModules ++ hatEndpointModules
+      );
 
       # Helper to create bridge netdevs
       mkClientBridge = name: {
@@ -164,7 +218,7 @@
         }
         {
           assertion = hasEnterpriseIntent;
-          message = "access-endpoint renderer: intent.nix must define an 'esp' enterprise scope";
+          message = "access-endpoint renderer: intent.nix must define an enterprise scope";
         }
       ];
     };
