@@ -265,8 +265,8 @@ in
                 (c:
                   let
                     endpointName = c.name;
-                    # Re-derive assignment from inventory (same logic as buildFixtureContainers)
-                    allEndpointClients =
+                    # Re-derive assignment from inventory
+                    allClients =
                       let
                         nixosInv = import resolvedInventoryPath;
                         nixosHosts = nixosInv.deployment.hosts or { };
@@ -274,19 +274,18 @@ in
                         clabInv = import resolvedClabInventoryPath;
                         clabHosts = clabInv.deployment.hosts or { };
                         clabClients = lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues clabHosts);
-                        allClients = nixosClients // clabClients;
                       in
-                        allClients;
+                        nixosClients // clabClients;
                     endpoint = allClients.${endpointName} or { };
                     assignment = endpoint.assignment or "dhcp";
                   in
                     assignment == "dhcp"
                 )
                 containersOnBridge;
-              # Derive tenant from first container (all on same bridge share tenant)
+              # Derive tenant from first container on bridge
               firstContainer = builtins.head containersOnBridge;
               firstEndpointName = firstContainer.name;
-              allEndpointClients2 =
+              allClientsForTenant =
                 let
                   nixosInv2 = import resolvedInventoryPath;
                   nixosHosts2 = nixosInv2.deployment.hosts or { };
@@ -296,7 +295,7 @@ in
                   clabClients2 = lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues clabHosts2);
                 in
                   nixosClients2 // clabClients2;
-              firstEndpoint = allEndpointClients2.${firstEndpointName} or { };
+              firstEndpoint = allClientsForTenant.${firstEndpointName} or { };
               tenant = firstEndpoint.tenant or bridgeName;
               prefix = tenantPrefixFor tenant;
               dhcpConfig =
