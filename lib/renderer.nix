@@ -137,8 +137,6 @@ let
       if dhcpConfig != null then ''
         [Network]
         DHCPServer=yes
-        IPMasquerade=both
-        IPForward=yes
 
         [Address]
         Address=${dhcpConfig.address}
