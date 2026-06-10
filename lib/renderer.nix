@@ -302,7 +302,13 @@ let
       services.resolved.enable = lib.mkForce true;
 
       systemd.network.netdevs = vlanNetdevs // bridgeNetdevs;
-      systemd.network.networks = vlanNetworks // bridgeNetworks;
+      systemd.network.networks = vlanNetworks // bridgeNetworks // {
+        # Add VLAN interfaces to eth0's existing network config
+        # Module system merges list-typed networkConfig.VLAN entries
+        "10-eth0".networkConfig.VLAN = map
+          (vlanCfg: "${vlanCfg.parent}.${toString vlanCfg.vlanId}")
+          (builtins.attrValues vlanBridges);
+      };
 
       containers = clientContainers;
 
