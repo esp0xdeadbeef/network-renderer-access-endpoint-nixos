@@ -18,7 +18,6 @@ let
       labInventory = import resolvedInventoryPath;
       labDeployment = labInventory.deployment or { };
       labHosts = labDeployment.hosts or { };
-      # Collect endpoint clients from either the specified host or ALL hosts
       endpointClients =
         if allHosts then
           lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues labHosts)
@@ -111,7 +110,35 @@ let
     in
     endpointBuildData;
 
-  # Helper to create bridge netdevs
+  # Parse inventory bridge networks for VLAN configuration
+  # Each bridge network may have mode=vlan with a vlan ID
+  getBridgeVlanConfig = resolvedInventoryPath: hostName:
+    let
+      inv = import resolvedInventoryPath;
+      host = (inv.deployment.hosts or {}).${hostName} or {};
+      bridgeNetworks = host.bridgeNetworks or {};
+    in
+    builtins.mapAttrs
+      (bridgeName: cfg:
+        if cfg ? mode && cfg.mode == "vlan" && cfg ? vlan then
+          { vlanId = cfg.vlan; parent = cfg.parent or "eth0"; }
+        else
+          null
+      )
+      bridgeNetworks;
+
+  # Create VLAN netdev for tagged bridge
+  mkVlanNetdev = name: vlanCfg: {
+    netdevConfig = {
+      Kind = "vlan";
+      Name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+    };
+    vlanConfig = {
+      Id = vlanCfg.vlanId;
+    };
+  };
+
+  # Create bridge netdev (plain L2)
   mkClientBridge = name: {
     netdevConfig = {
       Kind = "bridge";
@@ -119,10 +146,20 @@ let
     };
   };
 
-  # Helper to create bridge network configs (pure L2 — no IP, no DHCP, no NAT)
-  # Per FS-720/FS-982: the host is a thin vessel. DHCP and routing belong to
-  # the fabric (access-client container on s-router-nixos), not the host.
-  mkClientBridgeNetwork = name: dhcpConfig: {
+  # VLAN interface network config — attach to bridge
+  mkVlanNetwork = vlanCfg: bridgeName: {
+    matchConfig.Name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+    linkConfig.ActivationPolicy = "always-up";
+    networkConfig = {
+      ConfigureWithoutCarrier = true;
+      DHCP = "no";
+      IPv6AcceptRA = false;
+      Bridge = bridgeName;
+    };
+  };
+
+  # Bridge network config (pure L2 — no IP, no DHCP, no NAT)
+  mkClientBridgeNetwork = name: {
     matchConfig.Name = name;
     linkConfig = {
       ActivationPolicy = "always-up";
@@ -164,9 +201,7 @@ let
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
 
-      # Also resolve CLAB inventory for dual-host endpoints
-      labIntent = import resolvedIntentPath;
-      hasEnterpriseIntent = builtins.attrNames labIntent != [ ];
+      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
 
       # Build CPM client fixture module
       clientFixtureModule =
@@ -185,26 +220,19 @@ let
           };
         };
 
-      # Builders
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      # Resolve CLAB inventory for CLAB-side endpoint clients
-      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
-
-      # NixOS-side endpoint clients (from NixOS inventory, scoped to this host)
       nixosContainers = buildFixtureContainers {
         inherit hostName labSource builders;
         resolvedInventoryPath = resolvedInventoryPath;
       };
 
-      # CLAB-side endpoint clients (from CLAB inventory, all hosts)
       clabContainers = buildFixtureContainers {
         inherit labSource builders;
         allHosts = true;
         resolvedInventoryPath = resolvedClabInventoryPath;
       };
 
-      # Merge both access networks' clients
       clientContainers =
         lib.recursiveUpdate nixosContainers clabContainers;
 
@@ -217,6 +245,31 @@ let
           (builtins.attrValues clientContainers)
       );
       effectiveBridges = builtins.filter (b: b != null) clientBridges;
+
+      # VLAN configuration from inventory bridge networks
+      bridgeVlanConfig = getBridgeVlanConfig resolvedInventoryPath hostName;
+      vlanBridges = lib.filterAttrs (_name: cfg: cfg != null) bridgeVlanConfig;
+      vlanBridgeNames = builtins.attrNames vlanBridges;
+
+      # Netdevs: VLAN interfaces + bridges
+      vlanNetdevs = lib.mapAttrs' 
+        (bridgeName: vlanCfg: {
+          name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+          value = mkVlanNetdev bridgeName vlanCfg;
+        })
+        vlanBridges;
+
+      bridgeNetdevs = lib.genAttrs effectiveBridges mkClientBridge;
+
+      # Networks: VLAN network configs (attach VLAN to bridge) + bridge network configs
+      vlanNetworks = lib.mapAttrs'
+        (bridgeName: vlanCfg: {
+          name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+          value = mkVlanNetwork vlanCfg bridgeName;
+        })
+        vlanBridges;
+
+      bridgeNetworks = lib.genAttrs effectiveBridges (name: mkClientBridgeNetwork name);
 
     in
     {
@@ -246,8 +299,8 @@ let
       networking.useHostResolvConf = lib.mkForce false;
       services.resolved.enable = lib.mkForce true;
 
-      systemd.network.netdevs = lib.genAttrs effectiveBridges mkClientBridge;
-      systemd.network.networks = lib.genAttrs effectiveBridges (name: mkClientBridgeNetwork name null);
+      systemd.network.netdevs = vlanNetdevs // bridgeNetdevs;
+      systemd.network.networks = vlanNetworks // bridgeNetworks;
 
       containers = clientContainers;
 
@@ -257,11 +310,6 @@ let
 
       systemd.services.access-endpoint-renderer-dummy.enable = lib.mkForce false;
 
-      # Block endpoint container traffic from leaking to host management VLAN (real ISP)
-      # Endpoint bridges (client, branch, mgmt, streaming) must NOT egress through
-      # vlan2 — all client traffic must stay within the fabric.
-      # Uses a oneshot nftables service because br_netfilter may not be loaded
-      # and the host firewall is intentionally disabled.
       systemd.services.access-endpoint-isolate-bridges = {
         description = "Block endpoint bridge egress to host management VLAN";
         wantedBy = [ "multi-user.target" ];
