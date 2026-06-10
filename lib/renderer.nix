@@ -252,9 +252,11 @@ let
       vlanBridgeNames = builtins.attrNames vlanBridges;
 
       # Netdevs: VLAN interfaces + bridges
+      # Use "40-" prefix on attrset keys so .netdev files sort after
+      # eth0 configs (10-eth0.network) and before bridge configs (50-br-*)
       vlanNetdevs = lib.mapAttrs' 
         (bridgeName: vlanCfg: {
-          name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+          name = "40-${vlanCfg.parent}.${toString vlanCfg.vlanId}";
           value = mkVlanNetdev bridgeName vlanCfg;
         })
         vlanBridges;
@@ -264,7 +266,7 @@ let
       # Networks: VLAN network configs (attach VLAN to bridge) + bridge network configs
       vlanNetworks = lib.mapAttrs'
         (bridgeName: vlanCfg: {
-          name = "${vlanCfg.parent}.${toString vlanCfg.vlanId}";
+          name = "40-${vlanCfg.parent}.${toString vlanCfg.vlanId}";
           value = mkVlanNetwork vlanCfg bridgeName;
         })
         vlanBridges;
