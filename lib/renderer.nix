@@ -266,6 +266,7 @@ let
         description = "Block endpoint bridge egress to host management VLAN";
         wantedBy = [ "multi-user.target" ];
         after = [ "systemd-networkd.service" "network-online.target" ];
+        wants = [ "systemd-networkd.service" "network-online.target" ];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
