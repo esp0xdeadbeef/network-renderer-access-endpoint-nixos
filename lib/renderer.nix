@@ -360,6 +360,42 @@ let
 
       systemd.services.access-endpoint-renderer-dummy.enable = lib.mkForce false;
 
+      # Block endpoint container traffic from leaking to host management VLAN (real ISP)
+      # Endpoint bridges (client, branch, mgmt, streaming) must NOT egress through
+      # vlan2 — all client traffic must stay within the fabric.
+      # Uses a oneshot nftables service because br_netfilter may not be loaded
+      # and the host firewall is intentionally disabled.
+      systemd.services.access-endpoint-isolate-bridges = {
+        description = "Block endpoint bridge egress to host management VLAN";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "systemd-networkd.service" "network-online.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          # Ensure the filter forward chain exists with netfilter hook
+          nft list chain inet filter forward >/dev/null 2>&1 || \
+            nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+
+          # Recreate chain if it exists without a hook (from a bad prior run)
+          nft list chain inet filter forward 2>/dev/null | grep -q 'type filter hook' || {
+            nft delete chain inet filter forward 2>/dev/null || true
+            nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+          }
+
+          # Block endpoint bridge subnets from reaching vlan2 (real ISP)
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.20.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.30.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.40.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.50.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.60.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.70.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.20.80.0/24 drop 2>/dev/null || true
+          nft add rule inet filter forward oif vlan2 ip saddr 10.50.40.0/24 drop 2>/dev/null || true
+        '';
+      };
+
       assertions = [
         {
           assertion = mode == "test" || mode == "production";
