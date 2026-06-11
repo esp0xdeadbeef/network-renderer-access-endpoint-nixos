@@ -52,8 +52,11 @@ let
   services = result.systemd.services or {};
   containers = result.containers or {};
 
+  # Phase 2: Bridge networks come from CPM endpointAssignment containers (not raw inventory).
+  # Discover all bridge networks dynamically: non-VLAN, non-eth0 networks.
+  vlanPrefix = "40-eth0.";
   bridgeNames = builtins.filter
-    (n: builtins.elem n [ "branch" "client" "mgmt" "streaming" ])
+    (n: n != "10-eth0" && builtins.match "${vlanPrefix}.*" n == null)
     (builtins.attrNames networks);
 
   bridgeCheck = name:
@@ -70,7 +73,6 @@ let
       ipMasquerade = nc.IPMasquerade or "absent";
     };
 
-  vlanPrefix = "40-eth0.";
   vlanNetworks = builtins.filter
     (n: builtins.match "${vlanPrefix}.*" n != null)
     (builtins.attrNames networks);
@@ -174,7 +176,7 @@ fi
 echo ""
 echo "--- P2: Endpoint Bridges L2-Only ---"
 
-for bridge in branch client streaming; do
+for bridge in client dmz iot trusted; do
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b)' >/dev/null 2>&1; then
     pass "P2a — $bridge bridge exists"
   else
@@ -182,7 +184,7 @@ for bridge in branch client streaming; do
   fi
 done
 
-for bridge in branch client streaming; do
+for bridge in client dmz iot trusted; do
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .dhcp == "no"' >/dev/null 2>&1; then
     pass "P2b — $bridge DHCP=no"
   else
@@ -190,7 +192,7 @@ for bridge in branch client streaming; do
   fi
 done
 
-for bridge in branch client streaming; do
+for bridge in client dmz iot trusted; do
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .hasAddress == false' >/dev/null 2>&1; then
     pass "P2c — $bridge has no Address on host"
   else
@@ -242,7 +244,7 @@ else
   fail "P3d — mgmt bridge DHCP is not 'no'"
 fi
 
-for bridge in branch client streaming; do
+for bridge in client dmz iot trusted; do
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .hasGateway == false' >/dev/null 2>&1; then
     pass "P3e — $bridge has no Gateway"
   else
@@ -299,7 +301,7 @@ fi
 echo ""
 echo "--- P5: No Host-Side Compensation ---"
 
-for bridge in branch client streaming mgmt; do
+for bridge in client dmz iot trusted mgmt; do
   ipfwd="$(echo "$JSON" | jq -r --arg b "$bridge" '.bridges[] | select(.name == $b) | .ipForward')"
   if [ "$ipfwd" = "absent" ] || [ "$ipfwd" = "false" ] || [ "$ipfwd" = "no" ]; then
     pass "P5a — $bridge IPForward not enabled ($ipfwd)"
@@ -308,7 +310,7 @@ for bridge in branch client streaming mgmt; do
   fi
 done
 
-for bridge in branch client streaming mgmt; do
+for bridge in client dmz iot trusted mgmt; do
   masq="$(echo "$JSON" | jq -r --arg b "$bridge" '.bridges[] | select(.name == $b) | .ipMasquerade')"
   if [ "$masq" = "absent" ] || [ "$masq" = "false" ]; then
     pass "P5b — $bridge IPMasquerade not enabled ($masq)"
