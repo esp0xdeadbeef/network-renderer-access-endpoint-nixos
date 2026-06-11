@@ -6,112 +6,71 @@
 }:
 
 let
-  # Build endpoint containers from inventory fixture data
-  buildFixtureContainers =
-    { hostName ? null
-    , allHosts ? false
-    , labSource
-    , resolvedInventoryPath
+  # ----- Build endpoint containers from CPM endpointAssignment contract -----
+  # Phase 2: Replaces buildFixtureContainers which read raw inventory.
+  # Consumes CPM Phase 1 endpointAssignment records per-endpoint.
+  buildContainersFromAssignment =
+    { endpointAssignment ? { }
     , builders
     }:
-    let
-      labInventory = import resolvedInventoryPath;
-      labDeployment = labInventory.deployment or { };
-      labHosts = labDeployment.hosts or { };
-      endpointClients =
-        if allHosts then
-          lib.foldl' (acc: host: acc // (host.hat.endpointClients or {})) {} (builtins.attrValues labHosts)
-        else if hostName != null then
-          (labHosts.${hostName} or {}).hat.endpointClients or {}
-        else
-          {};
+    builtins.mapAttrs
+      (key: record:
+        let
+          mode = record.mode or "dhcp";
+          tenant = record.tenant or key;
+          bridge =
+            let
+              rawBridge = record.bridge or null;
+            in
+            if builtins.isString rawBridge && rawBridge != "" then
+              rawBridge
+            else
+              tenant;
+          static = record.static or { };
+          dhcp = record.dhcp or { };
+          name = key;
+          isStatic = builtins.elem mode [ "static" "static-only" ];
+          isDhcp = builtins.substring 0 4 mode == "dhcp" || mode == "reservation-dhcp" || mode == "reservation-dhcpv6";
 
-      endpointBuildData = builtins.mapAttrs
-        (name: endpoint:
-          let
-            tenant =
-              if builtins.hasAttr "tenant" endpoint then
-                endpoint.tenant
+          containerConfig =
+            if isStatic then
+              let
+                addr4 = "${static.address or "0.0.0.0"}/${toString (static.prefixLength or 24)}";
+                gw4 = static.gateway4 or null;
+                addr6 =
+                  if static ? address6 && static ? prefixLength6 then
+                    "${static.address6}/${toString static.prefixLength6}"
+                  else
+                    null;
+                gw6 = static.gateway6 or null;
+              in
+              if gw4 == null then
+                throw "access-endpoint-renderer: static endpoint ${key} has no gateway4"
               else
-                throw "access-endpoint-renderer: endpoint ${name} has no tenant";
-            assignment =
-              if builtins.hasAttr "assignment" endpoint then
-                endpoint.assignment
-              else
-                "dhcp";
-            bridge =
-              if builtins.hasAttr "bridge" endpoint then
-                endpoint.bridge
-              else
-                tenant;
-            staticIpv4 =
-              if builtins.hasAttr "ipv4" endpoint then
-                endpoint.ipv4
-              else
-                [ ];
-            staticIpv6 =
-              if builtins.hasAttr "ipv6" endpoint then
-                endpoint.ipv6
-              else
-                [ ];
-            rawGateway4 =
-              if builtins.hasAttr "gateway4" endpoint then
-                endpoint.gateway4
-              else
-                null;
-            rawGateway6 =
-              if builtins.hasAttr "gateway6" endpoint then
-                endpoint.gateway6
-              else
-                null;
-            containerConfig =
-              if assignment == "dhcp" then
-                builders.mkDhcpEndpoint {
-                  hostname = name;
-                }
-              else if assignment == "static-ipv4-or-ipv6-client" || assignment == "static" then
-                let
-                  gw4 =
-                    if rawGateway4 != null then
-                      rawGateway4
-                    else
-                      throw "access-endpoint-renderer: static endpoint ${name} has no gateway4";
-                  gw6 =
-                    if rawGateway6 != null then
-                      rawGateway6
-                    else
-                      throw "access-endpoint-renderer: static endpoint ${name} has no gateway6";
-                  addr4 =
-                    if staticIpv4 != [ ] then
-                      builtins.head staticIpv4
-                    else
-                      throw "access-endpoint-renderer: static endpoint ${name} has no ipv4 address";
-                  addr6 =
-                    if staticIpv6 != [ ] then
-                      builtins.head staticIpv6
-                    else
-                      throw "access-endpoint-renderer: static endpoint ${name} has no ipv6 address";
-                in
                 builders.mkStaticEndpoint {
                   hostname = name;
-                  inherit addr4 gw4 addr6 gw6;
+                  inherit addr4 gw4;
+                  inherit addr6 gw6;
                 }
-              else
-                throw "access-endpoint-renderer: endpoint ${name} has unsupported assignment ${assignment}";
-          in
-          {
-            autoStart = true;
-            privateNetwork = true;
-            hostBridge = bridge;
-            config = containerConfig;
-          }
-        )
-        endpointClients;
-    in
-    endpointBuildData;
+            else if isDhcp then
+              builders.mkDhcpEndpoint {
+                hostname = name;
+              }
+            else
+              throw "access-endpoint-renderer: endpoint ${key} has unsupported mode ${mode}";
+        in
+        {
+          autoStart = true;
+          privateNetwork = true;
+          hostBridge = bridge;
+          config = containerConfig;
+        }
+      )
+      endpointAssignment;
 
-  # Parse inventory bridge networks for VLAN configuration
-  # Each bridge network may have mode=vlan with a vlan ID
+  # Parse inventory bridge networks for VLAN configuration.
+  # Bridge/VLAN infrastructure is host-level network topology configuration,
+  # not endpoint assignment — it stays until a CPM host-network contract exists.
   getBridgeVlanConfig = resolvedInventoryPath: hostName:
     let
       inv = import resolvedInventoryPath;
@@ -182,7 +141,6 @@ let
     , routingSopsPath ? null
     , mode ? "test"
     , siteName ? "site-a"
-    , endpointAddressing ? "static"
     , ...
     }:
 
@@ -201,42 +159,35 @@ let
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
 
-      resolvedClabInventoryPath = "${network-labs}/${labSource}/inventory-clab.nix";
-
-      # Build CPM client fixture module
-      clientFixtureModule =
-        cpm.clientFixtures.hostModuleFromPaths {
-          intentPath = resolvedIntentPath;
+      # Build full CPM output including Phase 1 endpointAssignment contract.
+      # This replaces raw inventory reads for endpoint assignment.
+      cpmOutput =
+        cpm.compileAndBuildFromPaths {
+          inputPath = resolvedIntentPath;
           inventoryPath = resolvedInventoryPath;
-          sopsPath =
-            if routingSopsPath != null then
-              routingSopsPath
-            else
-              "${network-labs}/${labSource}/sops.nix";
-          fixture = {
-            kind = "emulated-clients";
-            hostName = "s-router-test-clients";
-            inherit siteName;
-          };
         };
+
+      # Navigate CPM output: control_plane_model.data.<enterprise>.<site>.endpointAssignment
+      cpmData = cpmOutput.control_plane_model or cpmOutput;
+      cpmEnterprises = cpmData.data or { };
+      enterpriseName = builtins.head (builtins.attrNames cpmEnterprises);
+      enterpriseData = cpmEnterprises.${enterpriseName} or { };
+      siteData = enterpriseData.${siteName} or { };
+
+      # Extract endpointAssignment from CPM output
+      endpointAssignments = siteData.endpointAssignment or { };
 
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
-      nixosContainers = buildFixtureContainers {
-        inherit hostName labSource builders;
-        resolvedInventoryPath = resolvedInventoryPath;
+      # Build containers from CPM contract instead of raw inventory
+      nixosContainers = buildContainersFromAssignment {
+        endpointAssignment = endpointAssignments;
+        inherit builders;
       };
 
-      clabContainers = buildFixtureContainers {
-        inherit labSource builders;
-        allHosts = true;
-        resolvedInventoryPath = resolvedClabInventoryPath;
-      };
+      clientContainers = nixosContainers;
 
-      clientContainers =
-        lib.recursiveUpdate nixosContainers clabContainers;
-
-      # Collect unique bridge names from client containers
+      # Collect unique bridge names from CPM-built containers
       clientBridges = lib.unique (
         builtins.map
           (container:
@@ -244,17 +195,18 @@ let
           )
           (builtins.attrValues clientContainers)
       );
-      effectiveBridges = builtins.filter (b: b != null) clientBridges;
+      # Effective bridges = container bridges + VLAN bridge names
+      # (VLAN bridges like mgmt are host infrastructure, not endpoint assignment)
+      effectiveBridges = builtins.filter (b: b != null) (
+        clientBridges ++ (builtins.attrNames vlanBridges)
+      );
 
       # VLAN configuration from inventory bridge networks
       bridgeVlanConfig = getBridgeVlanConfig resolvedInventoryPath hostName;
       vlanBridges = lib.filterAttrs (_name: cfg: cfg != null) bridgeVlanConfig;
-      vlanBridgeNames = builtins.attrNames vlanBridges;
 
       # Netdevs: VLAN interfaces + bridges
-      # Use "40-" prefix on attrset keys so .netdev files sort after
-      # eth0 configs (10-eth0.network) and before bridge configs (50-br-*)
-      vlanNetdevs = lib.mapAttrs' 
+      vlanNetdevs = lib.mapAttrs'
         (bridgeName: vlanCfg: {
           name = "40-${vlanCfg.parent}.${toString vlanCfg.vlanId}";
           value = mkVlanNetdev bridgeName vlanCfg;
@@ -263,7 +215,7 @@ let
 
       bridgeNetdevs = lib.genAttrs effectiveBridges mkClientBridge;
 
-      # Networks: VLAN network configs (attach VLAN to bridge) + bridge network configs
+      # Networks: VLAN network configs + bridge network configs
       vlanNetworks = lib.mapAttrs'
         (bridgeName: vlanCfg: {
           name = "40-${vlanCfg.parent}.${toString vlanCfg.vlanId}";
@@ -275,10 +227,6 @@ let
 
     in
     {
-      imports = [
-        clientFixtureModule
-      ];
-
       system.stateVersion = lib.mkForce "25.11";
 
       environment.systemPackages = with pkgs; [
@@ -303,8 +251,6 @@ let
 
       systemd.network.netdevs = vlanNetdevs // bridgeNetdevs;
       systemd.network.networks = vlanNetworks // bridgeNetworks // {
-        # Add VLAN interfaces to eth0's existing network config
-        # Module system merges list-typed networkConfig.VLAN entries
         "10-eth0".networkConfig.VLAN = map
           (vlanCfg: "${vlanCfg.parent}.${toString vlanCfg.vlanId}")
           (builtins.attrValues vlanBridges);
@@ -382,7 +328,6 @@ let
       routingSopsPath = rendererInput.sops or null;
       mode = rendererInput.mode or "test";
       siteName = rendererInput.siteName or "site-a";
-      endpointAddressing = rendererInput.endpointAddressing or "static";
     };
 
 in
