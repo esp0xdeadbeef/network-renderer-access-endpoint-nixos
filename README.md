@@ -126,3 +126,4 @@ bash tests/run.sh
 | Test | Covers |
 |------|--------|
 | `tests/test-FS-725-HDS-010-SDS-010-SMS-010-host-non-participation.sh` | 36 assertions, 8 SMS acceptance predicates: VLAN2 management reachability, endpoint bridges L2-only, no host-side participation, VLAN2/endpoint separation, no host compensation. 3 seeded negatives (DHCP injection, bridge IP injection, missing isolate-bridges service). |
+| `tests/test-FS-720-HDS-010-SDS-010-SMS-050-endpoint-bridge-module.sh` | 14 assertions, 4 SMS sub-module acceptance predicates: bridge netdev emission (SMS-050), bridge network configuration (SMS-020), dummy service deactivation (SMS-040), VLAN-tagged bridge networks (SMS-060). 2 seeded negatives (DHCPServer injection, bridge Address injection). |
