@@ -198,15 +198,13 @@ let
       # test fixtures that do not belong in the CPM model.
       labInventory = import resolvedInventoryPath;
       inventoryHost = (labInventory.deployment.hosts or { }).${hostName} or { };
+
+      # All endpoint clients regardless of owning substrate — each substrate's
+      # endpoints are rendered as NixOS containers on this host for fixture testing.
       fixtureEndpointClients =
-        (inventoryHost.hat or { }).endpointClients or { };
+        (inventoryHost.hat or { }).endpointClients or {};
 
-      # Only build for nixos-owned fixtures (skip clab-owned)
-      nixosFixtureClients = lib.filterAttrs
-        (_name: ep: (ep.owningSubstrate or "nixos") == "nixos")
-        fixtureEndpointClients;
-
-      fixtureEndpointNames = builtins.attrNames nixosFixtureClients;
+      fixtureEndpointNames = builtins.attrNames fixtureEndpointClients;
 
       # Build one container per fixture endpoint client from inventory data
       buildFixtureContainer = name: ep:
@@ -255,7 +253,7 @@ let
         else
           throw "access-endpoint-renderer: fixture ${name} unsupported assignment ${assignment}";
 
-      fixtureContainers = builtins.mapAttrs buildFixtureContainer nixosFixtureClients;
+      fixtureContainers = builtins.mapAttrs buildFixtureContainer fixtureEndpointClients;
 
       # Merge fixture containers into client containers
       clientContainers = nixosContainers // fixtureContainers;
@@ -264,7 +262,7 @@ let
       fixtureStaticChecks = lib.concatMapStringsSep "\n"
         (name:
           let
-            ep = nixosFixtureClients.${name};
+            ep = fixtureEndpointClients.${name};
             assignment = ep.assignment or "dhcp";
             staticIpv4 = ep.ipv4 or [ ];
             staticIpv6 = ep.ipv6 or [ ];
@@ -301,7 +299,7 @@ let
       # DHCP check shell fragments
       fixtureDhcpChecks = lib.concatMapStringsSep "\n"
         (name:
-          let ep = nixosFixtureClients.${name};
+          let ep = fixtureEndpointClients.${name};
               assignment = ep.assignment or "dhcp";
           in
           lib.optionalString (assignment == "dhcp") ''
@@ -445,7 +443,7 @@ let
         '';
       };
 
-      systemd.services.s-router-test-clients-endpoint-ready = lib.mkIf (nixosFixtureClients != { }) {
+      systemd.services.s-router-test-clients-endpoint-ready = lib.mkIf (fixtureEndpointClients != { }) {
         description = "Wait for all endpoint fixture containers to be up and configured";
         wantedBy = [ "multi-user.target" ];
         after = map (name: "container@${name}.service") fixtureEndpointNames;
