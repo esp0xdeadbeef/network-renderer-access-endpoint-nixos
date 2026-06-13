@@ -16,7 +16,8 @@ let
     builtins.mapAttrs
       (key: record:
         let
-          mode = record.mode or "dhcp";
+          mode = if record ? mode then record.mode else
+            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field endpointAssignment.${key}.mode is missing";
           tenant = record.tenant or key;
           bridge =
             let
@@ -35,7 +36,12 @@ let
           containerConfig =
             if isStatic then
               let
-                addr4 = "${static.address or "0.0.0.0"}/${toString (static.prefixLength or 24)}";
+                # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — fail-closed: no hardcoded address/prefix defaults
+                staticAddr = if static ? address then static.address else
+                  throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field static.address missing for endpoint ${key}";
+                staticPlen = if static ? prefixLength then static.prefixLength else
+                  throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field static.prefixLength missing for endpoint ${key}";
+                addr4 = "${staticAddr}/${toString staticPlen}";
                 gw4 = static.gateway4 or null;
                 addr6 =
                   if static ? address6 && static ? prefixLength6 then
@@ -80,7 +86,8 @@ let
     builtins.mapAttrs
       (bridgeName: cfg:
         if cfg ? mode && cfg.mode == "vlan" && cfg ? vlan then
-          { vlanId = cfg.vlan; parent = cfg.parent or "eth0"; }
+          { vlanId = cfg.vlan; parent = if cfg ? parent then cfg.parent else
+            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required field bridgeNetworks.${bridgeName}.parent is missing for VLAN bridge"; }
         else
           null
       )
@@ -307,7 +314,9 @@ let
   # ----- hostModule: standard renderer interface wrapping hostModuleFromPaths -----
   hostModule = rendererInput:
     let
+      # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
       hostName = rendererInput.hostName or "s-router-test-clients";
+      # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
       labSource = rendererInput.labSource or "active-lab";
       resolvedIntentPath =
         if rendererInput ? intent && rendererInput.intent != null then
@@ -326,7 +335,9 @@ let
       inventoryPath = resolvedInventoryPath;
       clientsPath = rendererInput.clients or null;
       routingSopsPath = rendererInput.sops or null;
+      # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
       mode = rendererInput.mode or "test";
+      # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
       siteName = rendererInput.siteName or "site-a";
     };
 
