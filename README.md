@@ -17,7 +17,7 @@ must be explicit in the README, tests, and owning layer before it is accepted.
 | FS | FS-983 | OK — Renderer Endpoint Fixture Data Boundary |
 | HDS | FS-720-HDS-030 | OK — Client Address Assignment Source |
 | SDS | FS-720-HDS-030-SDS-010 | OK — DHCP Address Assignment Source |
-| SMS | FS-720-HDS-030-SDS-010-SMS-010 | OK — DHCP Address-Assignment Source Module |
+| SMS | FS-720-HDS-010-SDS-025-SMS-010 | OK — DHCP Address-Assignment Source Module |
 | SMS | FS-725-HDS-010-SDS-010-SMS-010 | OK — Host Non-Participation (SMT proven) |
 
 ## Pipeline
