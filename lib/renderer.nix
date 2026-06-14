@@ -83,6 +83,9 @@ let
       host = (inv.deployment.hosts or {}).${hostName} or {};
       bridgeNetworks = host.bridgeNetworks or {};
     in
+    if host ? endpointClients then
+      throw "access-endpoint-renderer: FS-983-SMS-010 — WRONG_LAYER_DIRECT_INVENTORY_IMPORT: getBridgeVlanConfig must not access host endpointClients; direct inventory import for endpoint discovery is prohibited; bridge/VLAN infrastructure only"
+    else
     builtins.mapAttrs
       (bridgeName: cfg:
         if cfg ? mode && cfg.mode == "vlan" && cfg ? vlan then
@@ -197,7 +200,11 @@ let
       # fixture endpoints (separate from CPM model endpoints).  These are ephemeral
       # test fixtures that do not belong in the CPM model.
       labInventory = import resolvedInventoryPath;
-      inventoryHost = (labInventory.deployment.hosts or { }).${hostName} or { };
+      inventoryHost =
+        let h = (labInventory.deployment.hosts or { }).${hostName} or { };
+        in if h ? dhcpServer then
+          throw "access-endpoint-renderer: FS-983-SMS-010 — HOST_PARTICIPATION_VIOLATION: host ${hostName} must not provide DHCP/DNS/NAT/gateway/firewall services to endpoint containers"
+        else h;
 
       # All endpoint clients regardless of owning substrate — each substrate's
       # endpoints are rendered as NixOS containers on this host for fixture testing.
@@ -229,8 +236,8 @@ let
               if staticIpv4 != [ ] then
                 let raw = builtins.head staticIpv4;
                 in if lib.hasInfix "/" raw then raw
-                   else throw "access-endpoint-renderer: static fixture ${name} ipv4 missing prefix: ${raw}"
-              else throw "access-endpoint-renderer: static fixture ${name} has no ipv4";
+                   else throw "access-endpoint-renderer: FS-983-SMS-010 — MISSING_CPM_STATIC_ADDRESS_FIELD: static fixture ${name} ipv4 missing prefix: ${raw}"
+              else throw "access-endpoint-renderer: FS-983-SMS-010 — MISSING_CPM_FIXTURE_FIELD: static fixture ${name} has no ipv4";
             gw4 = ep.gateway4
               or (throw "access-endpoint-renderer: static fixture ${name} has no gateway4");
             addr6 =
@@ -462,6 +469,10 @@ let
         {
           assertion = mode == "test" || mode == "production";
           message = "access-endpoint renderer: mode must be either \"test\" or \"production\"";
+        }
+        {
+          assertion = fixtureEndpointClients == {} || (inventoryHost ? hat && inventoryHost.hat ? endpointClients);
+          message = "access-endpoint-renderer: FS-983-SMS-010 — UNAUTHORIZED_FIXTURE_SOURCE: fixture endpoints must come from authorized inventory.hat.endpointClients path; scripts, defaults, runtime discovery, and generated names are not authorized fixture sources";
         }
       ];
     };
