@@ -325,6 +325,7 @@ let
       # up and configured, then writes the marker that the rebuild loop checks.
       endpointReadyScript = pkgs.writeShellScript "s-router-test-clients-endpoint-ready" ''
         set -euo pipefail
+        export PATH="${pkgs.nixos-container}/bin:$PATH"
         marker=/run/s-router-test-clients-endpoints-ready
         check_endpoints() {
           for client in ${lib.concatMapStringsSep " " lib.escapeShellArg fixtureEndpointNames}; do
