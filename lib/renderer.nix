@@ -209,7 +209,8 @@ let
       # Build one container per fixture endpoint client from inventory data
       buildFixtureContainer = name: ep:
         let
-          assignment = ep.assignment or "dhcp";
+          assignment = if ep ? assignment then ep.assignment else
+            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           tenant = ep.tenant or name;
           bridge = ep.bridge or tenant;
           staticIpv4 = ep.ipv4 or [ ];
@@ -263,7 +264,8 @@ let
         (name:
           let
             ep = fixtureEndpointClients.${name};
-            assignment = ep.assignment or "dhcp";
+            assignment = if ep ? assignment then ep.assignment else
+              throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
             staticIpv4 = ep.ipv4 or [ ];
             staticIpv6 = ep.ipv6 or [ ];
             ipv4Check =
@@ -300,7 +302,8 @@ let
       fixtureDhcpChecks = lib.concatMapStringsSep "\n"
         (name:
           let ep = fixtureEndpointClients.${name};
-              assignment = ep.assignment or "dhcp";
+              assignment = if ep ? assignment then ep.assignment else
+                throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           in
           lib.optionalString (assignment == "dhcp") ''
             timeout 5 nixos-container run ${lib.escapeShellArg name} -- \
