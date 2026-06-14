@@ -425,7 +425,7 @@ let
       systemd.services.access-endpoint-isolate-bridges = {
         description = "Block endpoint bridge egress to host management VLAN";
         wantedBy = [ "multi-user.target" ];
-        after = [ "systemd-networkd.service" "network-online.target" ];
+        after = [ "systemd-networkd.service" "network-online.target" "sops-nix.service" ];
         wants = [ "systemd-networkd.service" "network-online.target" ];
         serviceConfig = {
           Type = "oneshot";
@@ -457,7 +457,7 @@ let
       systemd.services.s-router-test-clients-endpoint-ready = lib.mkIf (fixtureEndpointClients != { }) {
         description = "Wait for all endpoint fixture containers to be up and configured";
         wantedBy = [ "multi-user.target" ];
-        after = map (name: "container@${name}.service") fixtureEndpointNames;
+        after = [ "sops-nix.service" ] ++ map (name: "container@${name}.service") fixtureEndpointNames;
         requires = map (name: "container@${name}.service") fixtureEndpointNames;
         serviceConfig = {
           Type = "oneshot";
