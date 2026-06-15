@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR"
 echo "=== network-renderer-access-endpoint-nixos test runner ==="
 echo ""
 
-for test in test-*.sh; do
+for test in FS-*-HDS-*-SDS-*-SMS-*.sh; do
   if [ -x "$test" ] || [ -f "$test" ]; then
     echo "--- Running: $test ---"
     bash "$test" || {

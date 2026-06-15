@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GAMP-ID: FS-840 (functional requirement: scoped runtime secret delivery)
+# GAMP-ID: FS-982-HDS-010-SDS-010-SMS-070
 # GAMP-SCOPE: software-module-test
 # Focused construction test: Access-endpoint renderer sops service ordering.
 #
@@ -22,7 +22,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-echo "--- FS-840: Access-endpoint renderer sops service ordering ---"
+echo "--- FS-982-HDS-010-SDS-010-SMS-070: Access-endpoint renderer sops service ordering ---"
 echo ""
 
 failures=0
@@ -137,9 +137,9 @@ echo ""
 # Result
 # ============================================================
 if [[ ${failures} -eq 0 ]]; then
-  echo "PASS FS-840 — Access-endpoint renderer sops service ordering verified"
+  echo "PASS FS-982-HDS-010-SDS-010-SMS-070 — Access-endpoint renderer sops service ordering verified"
   exit 0
 else
-  echo "FAIL FS-840: ${failures} failure(s)"
+  echo "FAIL FS-982-HDS-010-SDS-010-SMS-070: ${failures} failure(s)"
   exit 1
 fi

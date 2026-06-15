@@ -60,7 +60,7 @@ KNOWN_GAPS=(
 
   # GAP-SMS041-REF: existing throws reference FS-310-SMS-110, not SMS-041
   # renderer.nix lines 20, 40-43, 53-54: throws are fail-closed but cite
-  # FS-310-HDS-010-SDS-010-SMS-110 instead of FS-720-HDS-030-SDS-010-SMS-041.
+  # FS-310-SMS-110 instead of FS-720-HDS-030-SDS-010-SMS-041.
   # SMS-041 §Cross-References says new throws shall reference SMS-041.
   # These are CORRECT BEHAVIOR (fail-closed throws exist) but with the
   # wrong governing spec reference — transition to SMS-041 references
