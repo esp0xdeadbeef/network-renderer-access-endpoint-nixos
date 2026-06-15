@@ -40,8 +40,9 @@ echo ""
 KNOWN_GAPS=(
   # All inventory key paths using `hat` as data organization — permitted per SMS-010
   "lib/renderer.nix:212  inventoryHost.hat — inventory data key, allowed exception"
-  "lib/renderer.nix:474  inventoryHost ? hat — inventory data key, allowed exception"
-  "lib/renderer.nix:475  inventory.hat.endpointClients — inventory data key, allowed exception"
+  "lib/renderer.nix:474  assertion block opening brace — no hat/sat/sit/smt token (stale entry, harmless)"
+  "lib/renderer.nix:475  inventoryHost ? hat in assertion — inventory data key, allowed exception"
+  "lib/renderer.nix:476  inventory.hat.endpointClients in diagnostic message — inventory data key reference, allowed exception"
   # Comment at line 199 describes the inventory key path — not an implementation identifier
   "lib/renderer.nix:199  comment describing hat.endpointClients inventory path, allowed"
 )
