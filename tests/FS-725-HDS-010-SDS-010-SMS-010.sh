@@ -174,31 +174,37 @@ fi
 # P2: Endpoint bridges emit only container attachment plumbing
 # ============================================================
 echo ""
+# Collect endpoint bridge names dynamically (exclude mgmt — tested separately in P1/P3d)
+ENDPOINT_BRIDGES=$(echo "$JSON" | jq -r '[.bridges[].name] - ["mgmt"] | .[]')
+
 echo "--- P2: Endpoint Bridges L2-Only ---"
 
-for bridge in client dmz iot trusted; do
+while IFS= read -r bridge; do
+  [ -z "$bridge" ] && continue
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b)' >/dev/null 2>&1; then
     pass "P2a — $bridge bridge exists"
   else
     fail "P2a — $bridge bridge missing"
   fi
-done
+done <<< "$ENDPOINT_BRIDGES"
 
-for bridge in client dmz iot trusted; do
+while IFS= read -r bridge; do
+  [ -z "$bridge" ] && continue
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .dhcp == "no"' >/dev/null 2>&1; then
     pass "P2b — $bridge DHCP=no"
   else
     fail "P2b — $bridge DHCP is not 'no'"
   fi
-done
+done <<< "$ENDPOINT_BRIDGES"
 
-for bridge in client dmz iot trusted; do
+while IFS= read -r bridge; do
+  [ -z "$bridge" ] && continue
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .hasAddress == false' >/dev/null 2>&1; then
     pass "P2c — $bridge has no Address on host"
   else
     fail "P2c — $bridge has host-side IP Address"
   fi
-done
+done <<< "$ENDPOINT_BRIDGES"
 
 # ============================================================
 # P3: Host must NOT emit forbidden network participation
@@ -244,7 +250,8 @@ else
   fail "P3d — mgmt bridge DHCP is not 'no'"
 fi
 
-for bridge in client dmz iot trusted; do
+while IFS= read -r bridge; do
+  [ -z "$bridge" ] && continue
   if echo "$JSON" | jq -e --arg b "$bridge" '.bridges[] | select(.name == $b) | .hasGateway == false' >/dev/null 2>&1; then
     pass "P3e — $bridge has no Gateway"
   else
@@ -255,7 +262,7 @@ for bridge in client dmz iot trusted; do
   else
     fail "P3f — $bridge has host-side DNS"
   fi
-done
+done <<< "$ENDPOINT_BRIDGES"
 
 # ============================================================
 # P4: VLAN2 separate from endpoint tenant traffic
@@ -301,7 +308,11 @@ fi
 echo ""
 echo "--- P5: No Host-Side Compensation ---"
 
-for bridge in client dmz iot trusted mgmt; do
+# P5 uses all bridges (including mgmt — must also have no IPForward/IPMasquerade)
+ALL_BRIDGES=$(echo "$JSON" | jq -r '.bridges[].name')
+
+for bridge in $ALL_BRIDGES; do
+  [ -z "$bridge" ] && continue
   ipfwd="$(echo "$JSON" | jq -r --arg b "$bridge" '.bridges[] | select(.name == $b) | .ipForward')"
   if [ "$ipfwd" = "absent" ] || [ "$ipfwd" = "false" ] || [ "$ipfwd" = "no" ]; then
     pass "P5a — $bridge IPForward not enabled ($ipfwd)"
@@ -310,7 +321,8 @@ for bridge in client dmz iot trusted mgmt; do
   fi
 done
 
-for bridge in client dmz iot trusted mgmt; do
+for bridge in $ALL_BRIDGES; do
+  [ -z "$bridge" ] && continue
   masq="$(echo "$JSON" | jq -r --arg b "$bridge" '.bridges[] | select(.name == $b) | .ipMasquerade')"
   if [ "$masq" = "absent" ] || [ "$masq" = "false" ]; then
     pass "P5b — $bridge IPMasquerade not enabled ($masq)"
