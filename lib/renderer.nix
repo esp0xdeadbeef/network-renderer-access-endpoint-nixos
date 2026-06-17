@@ -474,7 +474,7 @@ let
         }
         {
           assertion = fixtureEndpointClients == {} || (inventoryHost ? hat && inventoryHost.hat ? endpointClients);
-          message = "access-endpoint-renderer: FS-983-SMS-010 — UNAUTHORIZED_FIXTURE_SOURCE: fixture endpoints must come from authorized inventory.hat.endpointClients path; scripts, defaults, runtime discovery, and generated names are not authorized fixture sources";
+          message = "access-endpoint-renderer: UNAUTHORIZED_FIXTURE_SOURCE: fixture endpoints must come from authorized inventory.hat.endpointClients path; scripts, defaults, runtime discovery, and generated names are not authorized fixture sources";
         }
       ];
     };
