@@ -45,6 +45,8 @@ KNOWN_GAPS=(
   "lib/renderer.nix:476  inventory.hat.endpointClients in diagnostic message — inventory data key reference, allowed exception"
   # Comment at line 199 describes the inventory key path — not an implementation identifier
   "lib/renderer.nix:199  comment describing hat.endpointClients inventory path, allowed"
+  # Line 477 message also references inventory.hat.endpointClients — same exception
+  "lib/renderer.nix:477  inventory.hat.endpointClients in assertion message — inventory data key reference, allowed exception"
 )
 
 # ================================================================
