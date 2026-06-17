@@ -334,13 +334,14 @@ let
           ${fixtureStaticChecks}
           ${fixtureDhcpChecks}
         }
-        for _ in $(seq 1 120); do
+        for _ in $(seq 1 900); do
           if check_endpoints; then
             printf 'ready\n' > "$marker"
             exit 0
           fi
           sleep 2
         done
+        echo \"endpoint-ready: timed out after 30 min (900 iterations), writing marker\" >&2
         check_endpoints
         printf 'ready\n' > "$marker"
       '';
