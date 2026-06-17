@@ -341,7 +341,7 @@ let
           fi
           sleep 2
         done
-        echo \"endpoint-ready: timed out after 30 min (900 iterations), writing marker\" >&2
+        echo "endpoint-ready: timed out after 30 min (900 iterations), writing marker" >&2
         check_endpoints
         printf 'ready\n' > "$marker"
       '';
