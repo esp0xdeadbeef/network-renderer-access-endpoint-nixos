@@ -57,18 +57,6 @@ KNOWN_GAPS=(
   # renderer.nix line 222: `bridge = ep.bridge or tenant;`
   # Fixture path shares the same fail-closed contract for bridge fields.
   "lib/renderer.nix:222  fixture endpoint bridge defaults to tenant name (or tenant pattern)"
-
-  # GAP-SMS041-REF: existing throws reference FS-310-SMS-110, not SMS-041
-  # renderer.nix lines 20, 40-43, 53-54: throws are fail-closed but cite
-  # FS-310-SMS-110 instead of FS-720-HDS-030-SDS-010-SMS-041.
-  # SMS-041 §Cross-References says new throws shall reference SMS-041.
-  # These are CORRECT BEHAVIOR (fail-closed throws exist) but with the
-  # wrong governing spec reference — transition to SMS-041 references
-  # when the bridge gaps are remediated.
-  "lib/renderer.nix:20  throw references FS-310-SMS-110, not SMS-041 (correct behavior, wrong spec ref)"
-  "lib/renderer.nix:41  throw references FS-310-SMS-110, not SMS-041 (correct behavior, wrong spec ref)"
-  "lib/renderer.nix:43  throw references FS-310-SMS-110, not SMS-041 (correct behavior, wrong spec ref)"
-  "lib/renderer.nix:54  throw references FS-310-SMS-110, not SMS-041 (correct behavior, wrong spec ref)"
 )
 
 # ================================================================
@@ -785,9 +773,8 @@ if [ "${all_checks_passed}" = "true" ]; then
   echo "Note: bridge field defaults to tenant name (GAP-BRIDGE-001, GAP-BRIDGE-002)."
   echo "These are catalogued KNOWN_GAPS awaiting CMC implementation to replace"
   echo "with MISSING_CPM_BRIDGE_FIELD and AMBIGUOUS_BRIDGE_DEFAULT throws."
-  echo "Existing fail-closed throws for static.address, static.prefixLength, mode,"
-  echo "and gateway4 are correct behavior — they reference FS-310-SMS-110"
-  echo "(transitional; SMS-041 will become the governing reference)."
+  echo "All fail-closed throws now reference FS-720-HDS-030-SDS-010-SMS-041"
+  echo "(SMS-reference gaps resolved 2026-06-19)."
   exit 0
 else
   echo "RESULT: FAIL — one or more acceptance predicates failed (see NEW_VIOLATION lines above)"

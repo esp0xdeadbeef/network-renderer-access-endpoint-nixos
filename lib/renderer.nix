@@ -17,7 +17,7 @@ let
       (key: record:
         let
           mode = if record ? mode then record.mode else
-            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field endpointAssignment.${key}.mode is missing";
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field endpointAssignment.${key}.mode is missing";
           tenant = record.tenant or key;
           bridge =
             let
@@ -36,11 +36,11 @@ let
           containerConfig =
             if isStatic then
               let
-                # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — fail-closed: no hardcoded address/prefix defaults
+                # GAMP: FS-720-HDS-030-SDS-010-SMS-041 — fail-closed: no hardcoded address/prefix defaults
                 staticAddr = if static ? address then static.address else
-                  throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field static.address missing for endpoint ${key}";
+                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field static.address missing for endpoint ${key}";
                 staticPlen = if static ? prefixLength then static.prefixLength else
-                  throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required CPM field static.prefixLength missing for endpoint ${key}";
+                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field static.prefixLength missing for endpoint ${key}";
                 addr4 = "${staticAddr}/${toString staticPlen}";
                 gw4 = static.gateway4 or null;
                 addr6 =
@@ -51,7 +51,7 @@ let
                 gw6 = static.gateway6 or null;
               in
               if gw4 == null then
-                throw "access-endpoint-renderer: static endpoint ${key} has no gateway4"
+                throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — static endpoint ${key} has no gateway4"
               else
                 builders.mkStaticEndpoint {
                   hostname = name;
@@ -217,7 +217,7 @@ let
       buildFixtureContainer = name: ep:
         let
           assignment = if ep ? assignment then ep.assignment else
-            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           tenant = ep.tenant or name;
           bridge = ep.bridge or tenant;
           staticIpv4 = ep.ipv4 or [ ];
