@@ -187,6 +187,25 @@ let
       # Extract endpointAssignment from CPM output
       endpointAssignments = siteData.endpointAssignment or { };
 
+      # GAMP: FS-720-HDS-030-SDS-010-SMS-021 — CPM contract structure validation
+      # FC3: MISSING_CPM_CONTRACT_GAP when CPM output is absent or missing
+      # required endpointAssignment fields
+      _cpmStructureValid =
+        if cpmEnterprises == { } then
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-021 — MISSING_CPM_CONTRACT_GAP: CPM output has no enterprise data; control_plane_model.data is empty"
+        else if enterpriseData == { } then
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-021 — MISSING_CPM_CONTRACT_GAP: enterprise ${enterpriseName} has no data in CPM output"
+        else if siteData == { } then
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-021 — MISSING_CPM_CONTRACT_GAP: site ${siteName} has no data in CPM output"
+        else true;
+
+      # FC4: MISSING_CPM_CONTRACT_FIELD when endpointAssignment is entirely absent
+      # (not just empty — the key itself is missing from CPM output)
+      _endpointAssignmentPresent =
+        if !(siteData ? endpointAssignment) then
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-021 — MISSING_CPM_CONTRACT_FIELD: required CPM field endpointAssignment is absent from site ${siteName} data"
+        else true;
+
       builders = import ./client-builders.nix { inherit lib pkgs; };
 
       # Build containers from CPM contract instead of raw inventory
@@ -199,7 +218,21 @@ let
       # Reads inventory deployment.hosts.<hostName>.hat.endpointClients for nixos-owned
       # fixture endpoints (separate from CPM model endpoints).  These are ephemeral
       # test fixtures that do not belong in the CPM model.
+      #
+      # GAMP: FS-720-HDS-030-SDS-010-SMS-021 — UNAUTHORIZED_INVENTORY_FALLBACK guard
+      # FC3: When CPM endpointAssignment output is empty and the renderer would
+      # fall back to raw inventory for endpoint fixture data, the fallback is
+      # unauthorized. The renderer must report MISSING_CPM_CONTRACT_GAP and must
+      # not silently recover from raw files.
       labInventory = import resolvedInventoryPath;
+      _unauthorizedInventoryFallback =
+        let
+          invHost = (labInventory.deployment.hosts or { }).${hostName} or { };
+          fixtureEps = (invHost.hat or { }).endpointClients or { };
+        in
+        if endpointAssignments == { } && fixtureEps != { } then
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-021 — UNAUTHORIZED_INVENTORY_FALLBACK: CPM endpointAssignment is empty (MISSING_CPM_CONTRACT_GAP) but renderer would recover ${toString (builtins.length (builtins.attrNames fixtureEps))} endpoint(s) from raw inventory; supply endpoint data through CPM endpointAssignment contract, not inventory.hat.endpointClients"
+        else true;
       inventoryHost =
         let h = (labInventory.deployment.hosts or { }).${hostName} or { };
         in if h ? dhcpServer then
