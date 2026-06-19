@@ -54,9 +54,9 @@ KNOWN_GAPS=(
   "lib/renderer.nix:29  bridge defaults to tenant name when bridge field absent/empty — violates SMS-041 MISSING_CPM_BRIDGE_FIELD and AMBIGUOUS_BRIDGE_DEFAULT"
 
   # GAP-BRIDGE-002: fixture endpoint bridge defaults to tenant name
-  # renderer.nix line 222: `bridge = ep.bridge or tenant;`
+  # renderer.nix line 255: `bridge = ep.bridge or tenant;`
   # Fixture path shares the same fail-closed contract for bridge fields.
-  "lib/renderer.nix:222  fixture endpoint bridge defaults to tenant name (or tenant pattern)"
+  "lib/renderer.nix:255  fixture endpoint bridge defaults to tenant name (or tenant pattern)"
 )
 
 # ================================================================
