@@ -17,16 +17,20 @@ let
       (key: record:
         let
           mode = if record ? mode then record.mode else
-            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field endpointAssignment.${key}.mode is missing";
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MODE_INFERENCE_REJECTED — required CPM field endpointAssignment.${key}.mode is missing";
           tenant = record.tenant or key;
           bridge =
             let
               rawBridge = record.bridge or null;
             in
-            if builtins.isString rawBridge && rawBridge != "" then
-              rawBridge
+            if rawBridge == null then
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} has no bridge field; CPM endpointAssignment must supply explicit bridge name"
+            else if !(builtins.isString rawBridge) then
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} bridge field is not a string (found ${builtins.typeOf rawBridge})"
+            else if rawBridge == "" then
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: endpoint ${key} bridge field is empty string; CPM must supply explicit non-empty bridge name"
             else
-              tenant;
+              rawBridge;
           static = record.static or { };
           dhcp = record.dhcp or { };
           name = key;
@@ -38,9 +42,9 @@ let
               let
                 # GAMP: FS-720-HDS-030-SDS-010-SMS-041 — fail-closed: no hardcoded address/prefix defaults
                 staticAddr = if static ? address then static.address else
-                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field static.address missing for endpoint ${key}";
+                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.address missing for endpoint ${key}";
                 staticPlen = if static ? prefixLength then static.prefixLength else
-                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — required CPM field static.prefixLength missing for endpoint ${key}";
+                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.prefixLength missing for endpoint ${key}";
                 addr4 = "${staticAddr}/${toString staticPlen}";
                 gw4 = static.gateway4 or null;
                 addr6 =
@@ -51,7 +55,7 @@ let
                 gw6 = static.gateway6 or null;
               in
               if gw4 == null then
-                throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — static endpoint ${key} has no gateway4"
+                throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — static endpoint ${key} has no gateway4"
               else
                 builders.mkStaticEndpoint {
                   hostname = name;
@@ -252,7 +256,13 @@ let
           assignment = if ep ? assignment then ep.assignment else
             throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           tenant = ep.tenant or name;
-          bridge = ep.bridge or tenant;
+          bridge = if ep ? bridge then
+            let rawBridge = ep.bridge;
+            in if rawBridge == "" then
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: fixture endpoint ${name} bridge field is empty string"
+            else rawBridge
+          else
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: fixture endpoint ${name} bridge field is absent";
           staticIpv4 = ep.ipv4 or [ ];
           staticIpv6 = ep.ipv6 or [ ];
         in
