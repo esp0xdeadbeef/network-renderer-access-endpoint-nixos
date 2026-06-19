@@ -64,9 +64,9 @@ KNOWN_GAPS=(
   # This is a CONSTRUCTION_GAP — fixture endpoints are read from raw
   # inventory rather than a CPM fixture contract. Tracked under
   # FS-983 SMS-010 for remediation.
-  "lib/renderer.nix:230  inventoryHost.hat.endpointClients guard check — checks for host DHCP/DNS/NAT participation (guard exists)"
-  "lib/renderer.nix:245  inventoryHost.hat.endpointClients — fixture endpoint client walking from raw inventory (CONSTRUCTION_GAP, tracked under FS-983-SMS-010)"
-  "lib/renderer.nix:232  _unauthorizedInventoryFallback — inventoryHost.hat.endpointClients guard for CPM-missing fallback (SMS-021 guard, not endpoint discovery)"
+  "lib/renderer.nix:234  inventoryHost.hat.endpointClients guard check — checks for host DHCP/DNS/NAT participation (guard exists)"
+  "lib/renderer.nix:249  inventoryHost.hat.endpointClients — fixture endpoint client walking from raw inventory (CONSTRUCTION_GAP, tracked under FS-983-SMS-010)"
+  "lib/renderer.nix:236  _unauthorizedInventoryFallback — inventoryHost.hat.endpointClients guard for CPM-missing fallback (SMS-021 guard, not endpoint discovery)"
 )
 
 # ================================================================
