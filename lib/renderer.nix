@@ -309,6 +309,32 @@ let
       # Merge fixture containers into client containers
       clientContainers = nixosContainers // fixtureContainers;
 
+      # ----- GAMP: FS-725-HDS-020-SDS-010-SMS-010 — SN1: mgmt bridge endpoint traffic -----
+      # Fixture endpoint clients are explicitly endpoint containers per SDS architecture.
+      # They must never be attached to the mgmt bridge (management-only VLAN 2).
+      _sn1_mgmtEndpointViolation =
+        let
+          fixtureOnMgmt = builtins.filter
+            (c: c.hostBridge or null == "mgmt")
+            (builtins.attrValues fixtureContainers);
+        in
+        if fixtureOnMgmt != [ ] then
+          throw "access-endpoint-renderer: FS-725-HDS-020-SDS-010-SMS-010 — MGMT_BRIDGE_ENDPOINT_TRAFFIC: ${toString (builtins.length fixtureOnMgmt)} fixture endpoint container(s) illegally attached to mgmt bridge; mgmt bridge must carry only management traffic, not endpoint tenant traffic"
+        else true;
+
+      # ----- GAMP: FS-725-HDS-020-SDS-010-SMS-010 — SN2: empty management endpoint inventory -----
+      # Management endpoint inventory must be non-empty when any containers exist.
+      _sn2_emptyMgmtInventory =
+        let
+          mgmtContainers = builtins.filter
+            (c: c.hostBridge or null == "mgmt")
+            (builtins.attrValues clientContainers);
+          totalContainers = builtins.length (builtins.attrValues clientContainers);
+        in
+        if totalContainers > 0 && mgmtContainers == [ ] then
+          throw "access-endpoint-renderer: FS-725-HDS-020-SDS-010-SMS-010 — EMPTY_MANAGEMENT_ENDPOINT_INVENTORY: ${toString totalContainers} container(s) exist but none are attached to mgmt bridge; management endpoint inventory is empty"
+        else true;
+
       # Static-IP and route check shell fragments for the readiness script
       fixtureStaticChecks = lib.concatMapStringsSep "\n"
         (name:
@@ -518,6 +544,14 @@ let
         {
           assertion = fixtureEndpointClients == {} || (inventoryHost ? hat && inventoryHost.hat ? endpointClients);
           message = "access-endpoint-renderer: UNAUTHORIZED_FIXTURE_SOURCE: fixture endpoints must come from authorized inventory.hat.endpointClients path; scripts, defaults, runtime discovery, and generated names are not authorized fixture sources";
+        }
+        {
+          assertion = _sn1_mgmtEndpointViolation;
+          message = "access-endpoint-renderer: FS-725-HDS-020-SDS-010-SMS-010 — MGMT_BRIDGE_ENDPOINT_TRAFFIC guard assertion failed";
+        }
+        {
+          assertion = _sn2_emptyMgmtInventory;
+          message = "access-endpoint-renderer: FS-725-HDS-020-SDS-010-SMS-010 — EMPTY_MANAGEMENT_ENDPOINT_INVENTORY guard assertion failed";
         }
       ];
     };
