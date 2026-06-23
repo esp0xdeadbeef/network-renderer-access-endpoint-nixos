@@ -323,15 +323,24 @@ let
         else true;
 
       # ----- GAMP: FS-725-HDS-020-SDS-010-SMS-010 — SN2: empty management endpoint inventory -----
-      # Management endpoint inventory must be non-empty when any containers exist.
+      # Management endpoint inventory must be non-empty when fixtures are expected
+      # to create management access.  Legacy fixture records without the boundary
+      # marker retain the old fail-closed behavior.
       _sn2_emptyMgmtInventory =
         let
           mgmtContainers = builtins.filter
             (c: c.hostBridge or null == "mgmt")
             (builtins.attrValues clientContainers);
           totalContainers = builtins.length (builtins.attrValues clientContainers);
+          fixtureRequiresManagementInventory = ep:
+            if ep ? managementBoundary && ep.managementBoundary ? fixturePlacementCreatesManagementAccess then
+              ep.managementBoundary.fixturePlacementCreatesManagementAccess == true
+            else
+              true;
+          managementInventoryRequired =
+            builtins.any fixtureRequiresManagementInventory (builtins.attrValues fixtureEndpointClients);
         in
-        if totalContainers > 0 && mgmtContainers == [ ] then
+        if managementInventoryRequired && totalContainers > 0 && mgmtContainers == [ ] then
           throw "access-endpoint-renderer: FS-725-HDS-020-SDS-010-SMS-010 — EMPTY_MANAGEMENT_ENDPOINT_INVENTORY: ${toString totalContainers} container(s) exist but none are attached to mgmt bridge; management endpoint inventory is empty"
         else true;
 
