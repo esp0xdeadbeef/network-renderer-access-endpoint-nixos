@@ -99,8 +99,8 @@ The flake exports:
 
 | Export | Description |
 |--------|-------------|
-| `libBySystem.<system>.renderer.hostModule` | Standard renderer interface: accepts `rendererInput` with optional `intent`, `inventory`, `hostName`, `labSource`, `mode`, `siteName` |
-| `libBySystem.<system>.renderer.hostModuleFromPaths` | Direct path interface: accepts explicit `intentPath`, `inventoryPath`, `hostName`, `labSource`, `mode`, `siteName` |
+| `libBySystem.<system>.renderer.hostModule` | Standard renderer interface: accepts explicit `cpm` or `controlPlane` input plus renderer inventory/host parameters |
+| `libBySystem.<system>.renderer.hostModuleFromPaths` | Compatibility path builder: accepts explicit `intentPath`, `inventoryPath`, `hostName`, `labSource`, `mode`, `siteName`, then builds CPM before rendering |
 
 Example usage:
 
@@ -108,7 +108,8 @@ Example usage:
 inputs.network-renderer-access-endpoint-nixos.libBySystem.${system}.renderer.hostModule {
   hostName = "s-router-test-clients";
   labSource = "active-lab";
-  intent = ./intent.nix;
+  cpm = cpmBuilt;
+  controlPlane = cpmBuilt;
   inventory = ./inventory-nixos.nix;
   mode = "test";
   siteName = "site-a";
