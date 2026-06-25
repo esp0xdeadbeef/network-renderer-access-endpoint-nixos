@@ -6,6 +6,15 @@
 }:
 
 let
+  cpmLib = cpm;
+
+  readInventory =
+    inventoryOrPath:
+    if builtins.isPath inventoryOrPath || builtins.isString inventoryOrPath then
+      import inventoryOrPath
+    else
+      inventoryOrPath;
+
   # ----- Build endpoint containers from CPM endpointAssignment contract -----
   # Phase 2: Replaces buildFixtureContainers which read raw inventory.
   # Consumes CPM Phase 1 endpointAssignment records per-endpoint.
@@ -15,90 +24,94 @@ let
     }:
     builtins.mapAttrs
       (key: record:
-        let
-          mode = if record ? mode then record.mode else
-            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MODE_INFERENCE_REJECTED — required CPM field endpointAssignment.${key}.mode is missing";
-          tenant = record.tenant or key;
-          bridge =
-            let
-              rawBridge = record.bridge or null;
-            in
-            if rawBridge == null then
-              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} has no bridge field; CPM endpointAssignment must supply explicit bridge name"
-            else if !(builtins.isString rawBridge) then
-              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} bridge field is not a string (found ${builtins.typeOf rawBridge})"
-            else if rawBridge == "" then
-              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: endpoint ${key} bridge field is empty string; CPM must supply explicit non-empty bridge name"
-            else
-              rawBridge;
-          static = record.static or { };
-          dhcp = record.dhcp or { };
-          name = key;
-          isStatic = builtins.elem mode [ "static" "static-only" ];
-          isDhcp = builtins.substring 0 4 mode == "dhcp" || mode == "reservation-dhcp" || mode == "reservation-dhcpv6";
+      let
+        mode = if record ? mode then record.mode else
+        throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MODE_INFERENCE_REJECTED — required CPM field endpointAssignment.${key}.mode is missing";
+        tenant = record.tenant or key;
+        bridge =
+          let
+            rawBridge = record.bridge or null;
+          in
+          if rawBridge == null then
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} has no bridge field; CPM endpointAssignment must supply explicit bridge name"
+          else if !(builtins.isString rawBridge) then
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: endpoint ${key} bridge field is not a string (found ${builtins.typeOf rawBridge})"
+          else if rawBridge == "" then
+            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: endpoint ${key} bridge field is empty string; CPM must supply explicit non-empty bridge name"
+          else
+            rawBridge;
+        static = record.static or { };
+        dhcp = record.dhcp or { };
+        name = key;
+        isStatic = builtins.elem mode [ "static" "static-only" ];
+        isDhcp = builtins.substring 0 4 mode == "dhcp" || mode == "reservation-dhcp" || mode == "reservation-dhcpv6";
 
-          containerConfig =
-            if isStatic then
-              let
-                # GAMP: FS-720-HDS-030-SDS-010-SMS-041 — fail-closed: no hardcoded address/prefix defaults
-                staticAddr = if static ? address then static.address else
-                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.address missing for endpoint ${key}";
-                staticPlen = if static ? prefixLength then static.prefixLength else
-                  throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.prefixLength missing for endpoint ${key}";
-                addr4 = "${staticAddr}/${toString staticPlen}";
-                gw4 = static.gateway4 or null;
-                addr6 =
-                  if static ? address6 && static ? prefixLength6 then
-                    "${static.address6}/${toString static.prefixLength6}"
-                  else
-                    null;
-                gw6 = static.gateway6 or null;
-              in
-              if gw4 == null then
-                throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — static endpoint ${key} has no gateway4"
-              else
-                builders.mkStaticEndpoint {
-                  hostname = name;
-                  inherit addr4 gw4;
-                  inherit addr6 gw6;
-                }
-            else if isDhcp then
-              builders.mkDhcpEndpoint {
+        containerConfig =
+          if isStatic then
+            let
+              # GAMP: FS-720-HDS-030-SDS-010-SMS-041 — fail-closed: no hardcoded address/prefix defaults
+              staticAddr = if static ? address then static.address else
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.address missing for endpoint ${key}";
+              staticPlen = if static ? prefixLength then static.prefixLength else
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — required CPM field static.prefixLength missing for endpoint ${key}";
+              addr4 = "${staticAddr}/${toString staticPlen}";
+              gw4 = static.gateway4 or null;
+              addr6 =
+                if static ? address6 && static ? prefixLength6 then
+                  "${static.address6}/${toString static.prefixLength6}"
+                else
+                  null;
+              gw6 = static.gateway6 or null;
+            in
+            if gw4 == null then
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — HARDCODED_DEFAULT_REJECTED — static endpoint ${key} has no gateway4"
+            else
+              builders.mkStaticEndpoint {
+                hostname = name;
+                inherit addr4 gw4;
+                inherit addr6 gw6;
+              }
+          else if isDhcp then
+            builders.mkDhcpEndpoint
+              {
                 hostname = name;
               }
-            else
-              throw "access-endpoint-renderer: endpoint ${key} has unsupported mode ${mode}";
-        in
-        {
-          autoStart = true;
-          privateNetwork = true;
-          hostBridge = bridge;
-          config = containerConfig;
-        }
+          else
+            throw "access-endpoint-renderer: endpoint ${key} has unsupported mode ${mode}";
+      in
+      {
+        autoStart = true;
+        privateNetwork = true;
+        hostBridge = bridge;
+        config = containerConfig;
+      }
       )
       endpointAssignment;
 
   # Parse inventory bridge networks for VLAN configuration.
   # Bridge/VLAN infrastructure is host-level network topology configuration,
   # not endpoint assignment — it stays until a CPM host-network contract exists.
-  getBridgeVlanConfig = resolvedInventoryPath: hostName:
+  getBridgeVlanConfig = inventoryOrPath: hostName:
     let
-      inv = import resolvedInventoryPath;
-      host = (inv.deployment.hosts or {}).${hostName} or {};
-      bridgeNetworks = host.bridgeNetworks or {};
+      inv = readInventory inventoryOrPath;
+      host = (inv.deployment.hosts or { }).${hostName} or { };
+      bridgeNetworks = host.bridgeNetworks or { };
     in
     if host ? endpointClients then
       throw "access-endpoint-renderer: FS-983-SMS-010 — WRONG_LAYER_DIRECT_INVENTORY_IMPORT: getBridgeVlanConfig must not access host endpointClients; direct inventory import for endpoint discovery is prohibited; bridge/VLAN infrastructure only"
     else
-    builtins.mapAttrs
-      (bridgeName: cfg:
-        if cfg ? mode && cfg.mode == "vlan" && cfg ? vlan then
-          { vlanId = cfg.vlan; parent = if cfg ? parent then cfg.parent else
-            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required field bridgeNetworks.${bridgeName}.parent is missing for VLAN bridge"; }
-        else
-          null
-      )
-      bridgeNetworks;
+      builtins.mapAttrs
+        (bridgeName: cfg:
+          if cfg ? mode && cfg.mode == "vlan" && cfg ? vlan then
+            {
+              vlanId = cfg.vlan;
+              parent = if cfg ? parent then cfg.parent else
+              throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — required field bridgeNetworks.${bridgeName}.parent is missing for VLAN bridge";
+            }
+          else
+            null
+        )
+        bridgeNetworks;
 
   # Create VLAN netdev for tagged bridge
   mkVlanNetdev = name: vlanCfg: {
@@ -151,6 +164,9 @@ let
     , labSource ? "active-lab"
     , intentPath ? null
     , inventoryPath ? null
+    , controlPlane ? null
+    , cpm ? null
+    , rendererInventory ? null
     , clientsPath ? null
     , routingSopsPath ? null
     , mode ? "test"
@@ -173,13 +189,22 @@ let
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
 
+      suppliedControlPlane =
+        if cpm != null then
+          cpm
+        else
+          controlPlane;
+
       # Build full CPM output including Phase 1 endpointAssignment contract.
       # This replaces raw inventory reads for endpoint assignment.
       cpmOutput =
-        cpm.compileAndBuildFromPaths {
-          inputPath = resolvedIntentPath;
-          inventoryPath = resolvedInventoryPath;
-        };
+        if suppliedControlPlane != null then
+          suppliedControlPlane
+        else
+          cpmLib.compileAndBuildFromPaths {
+            inputPath = resolvedIntentPath;
+            inventoryPath = resolvedInventoryPath;
+          };
 
       # Navigate CPM output: control_plane_model.data.<enterprise>.<site>.endpointAssignment
       cpmData = cpmOutput.control_plane_model or cpmOutput;
@@ -228,7 +253,11 @@ let
       # fall back to raw inventory for endpoint fixture data, the fallback is
       # unauthorized. The renderer must report MISSING_CPM_CONTRACT_GAP and must
       # not silently recover from raw files.
-      labInventory = import resolvedInventoryPath;
+      labInventory =
+        if rendererInventory != null then
+          rendererInventory
+        else
+          readInventory resolvedInventoryPath;
       _unauthorizedInventoryFallback =
         let
           invHost = (labInventory.deployment.hosts or { }).${hostName} or { };
@@ -246,7 +275,7 @@ let
       # All endpoint clients regardless of owning substrate — each substrate's
       # endpoints are rendered as NixOS containers on this host for fixture testing.
       fixtureEndpointClients =
-        (inventoryHost.hat or { }).endpointClients or {};
+        (inventoryHost.hat or { }).endpointClients or { };
 
       fixtureEndpointNames = builtins.attrNames fixtureEndpointClients;
 
@@ -254,15 +283,16 @@ let
       buildFixtureContainer = name: ep:
         let
           assignment = if ep ? assignment then ep.assignment else
-            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
+          throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           tenant = ep.tenant or name;
-          bridge = if ep ? bridge then
-            let rawBridge = ep.bridge;
-            in if rawBridge == "" then
-              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: fixture endpoint ${name} bridge field is empty string"
-            else rawBridge
-          else
-            throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: fixture endpoint ${name} bridge field is absent";
+          bridge =
+            if ep ? bridge then
+              let rawBridge = ep.bridge;
+              in if rawBridge == "" then
+                throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — AMBIGUOUS_BRIDGE_DEFAULT: fixture endpoint ${name} bridge field is empty string"
+              else rawBridge
+            else
+              throw "access-endpoint-renderer: FS-720-HDS-030-SDS-010-SMS-041 — MISSING_CPM_BRIDGE_FIELD: fixture endpoint ${name} bridge field is absent";
           staticIpv4 = ep.ipv4 or [ ];
           staticIpv6 = ep.ipv6 or [ ];
         in
@@ -279,7 +309,7 @@ let
               if staticIpv4 != [ ] then
                 let raw = builtins.head staticIpv4;
                 in if lib.hasInfix "/" raw then raw
-                   else throw "access-endpoint-renderer: FS-983-SMS-010 — MISSING_CPM_STATIC_ADDRESS_FIELD: static fixture ${name} ipv4 missing prefix: ${raw}"
+                else throw "access-endpoint-renderer: FS-983-SMS-010 — MISSING_CPM_STATIC_ADDRESS_FIELD: static fixture ${name} ipv4 missing prefix: ${raw}"
               else throw "access-endpoint-renderer: FS-983-SMS-010 — MISSING_CPM_FIXTURE_FIELD: static fixture ${name} has no ipv4";
             gw4 = ep.gateway4
               or (throw "access-endpoint-renderer: static fixture ${name} has no gateway4");
@@ -287,7 +317,7 @@ let
               if staticIpv6 != [ ] then
                 let raw = builtins.head staticIpv6;
                 in if lib.hasInfix "/" raw then raw
-                   else throw "access-endpoint-renderer: static fixture ${name} ipv6 missing prefix: ${raw}"
+                else throw "access-endpoint-renderer: static fixture ${name} ipv6 missing prefix: ${raw}"
               else throw "access-endpoint-renderer: static fixture ${name} has no ipv6";
             gw6 = ep.gateway6
               or (throw "access-endpoint-renderer: static fixture ${name} has no gateway6");
@@ -350,7 +380,7 @@ let
           let
             ep = fixtureEndpointClients.${name};
             assignment = if ep ? assignment then ep.assignment else
-              throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
+            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
             staticIpv4 = ep.ipv4 or [ ];
             staticIpv6 = ep.ipv6 or [ ];
             ipv4Check =
@@ -386,9 +416,10 @@ let
       # DHCP check shell fragments
       fixtureDhcpChecks = lib.concatMapStringsSep "\n"
         (name:
-          let ep = fixtureEndpointClients.${name};
-              assignment = if ep ? assignment then ep.assignment else
-                throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
+          let
+            ep = fixtureEndpointClients.${name};
+            assignment = if ep ? assignment then ep.assignment else
+            throw "access-endpoint-renderer: FS-310-HDS-010-SDS-010-SMS-110 — fixture endpoint ${name} missing 'assignment' field; cannot default to dhcp";
           in
           lib.optionalString (assignment == "dhcp") ''
             timeout 5 nixos-container run ${lib.escapeShellArg name} -- \
@@ -439,7 +470,7 @@ let
       );
 
       # VLAN configuration from inventory bridge networks
-      bridgeVlanConfig = getBridgeVlanConfig resolvedInventoryPath hostName;
+      bridgeVlanConfig = getBridgeVlanConfig labInventory hostName;
       vlanBridges = lib.filterAttrs (_name: cfg: cfg != null) bridgeVlanConfig;
 
       # Netdevs: VLAN interfaces + bridges
@@ -551,7 +582,7 @@ let
           message = "access-endpoint renderer: mode must be either \"test\" or \"production\"";
         }
         {
-          assertion = fixtureEndpointClients == {} || (inventoryHost ? hat && inventoryHost.hat ? endpointClients);
+          assertion = fixtureEndpointClients == { } || (inventoryHost ? hat && inventoryHost.hat ? endpointClients);
           message = "access-endpoint-renderer: UNAUTHORIZED_FIXTURE_SOURCE: fixture endpoints must come from authorized inventory.hat.endpointClients path; scripts, defaults, runtime discovery, and generated names are not authorized fixture sources";
         }
         {
@@ -565,7 +596,7 @@ let
       ];
     };
 
-  # ----- hostModule: standard renderer interface wrapping hostModuleFromPaths -----
+  # ----- hostModule: standard renderer interface consuming CPM/controlPlane input -----
   hostModule = rendererInput:
     let
       # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
@@ -582,11 +613,20 @@ let
           rendererInput.inventory
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
+      suppliedControlPlane =
+        if rendererInput ? cpm && rendererInput.cpm != null then
+          rendererInput.cpm
+        else if rendererInput ? controlPlane && rendererInput.controlPlane != null then
+          rendererInput.controlPlane
+        else
+          throw "network-renderer-access-endpoint-nixos hostModule: 'cpm' or 'controlPlane' is required. Use hostModuleFromPaths only as the compatibility path builder.";
     in
     hostModuleFromPaths {
       inherit hostName labSource;
       intentPath = resolvedIntentPath;
       inventoryPath = resolvedInventoryPath;
+      controlPlane = suppliedControlPlane;
+      rendererInventory = rendererInput.rendererInventory or null;
       clientsPath = rendererInput.clients or null;
       routingSopsPath = rendererInput.sops or null;
       # GAMP: FS-310-HDS-010-SDS-010-SMS-110 — renderer invocation parameter, caller must supply
