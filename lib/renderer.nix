@@ -40,7 +40,7 @@ let
         if assignment ? mode then
           assignment.mode
         else
-          throw "endpointAssignment.${name}.mode is missing";
+          throw "FS-310-HDS-010-SDS-010-SMS-110: endpointAssignment.${name}.mode is missing";
       hostBridge = endpointBridge name assignment;
       hostname = assignment.name or name;
       static = assignment.static or { };
@@ -48,7 +48,18 @@ let
         if builtins.hasAttr attr static then
           static.${attr}
         else
-          throw "endpointAssignment.${name}.static.${attr} is missing";
+          throw (
+            if attr == "gateway4" then
+              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway4; static.gateway4 missing"
+            else if attr == "gateway6" then
+              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway6; static.gateway6 missing"
+            else if attr == "address" then
+              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.address missing"
+            else if attr == "prefixLength" then
+              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.prefixLength missing"
+            else
+              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.${attr} missing"
+          );
       staticModule = clientBuilders.mkStaticEndpoint {
         inherit hostname;
         addr4 = "${requireStatic "address"}/${toString (requireStatic "prefixLength")}";
@@ -71,7 +82,7 @@ let
     else if mode == "static" || mode == "static-only" then
       mkContainer staticModule
     else
-      throw "endpointAssignment.${name}.mode '${mode}' is unsupported";
+      throw "FS-310-HDS-010-SDS-010-SMS-110: endpointAssignment.${name} unsupported mode '${mode}'";
 
   buildContainersFromAssignment = endpointAssignments:
     builtins.mapAttrs buildEndpointContainer endpointAssignments;
@@ -101,6 +112,29 @@ let
           (builtins.attrValues clientContainers)
       );
       effectiveBridges = builtins.filter (bridge: bridge != null) clientBridges;
+      cpmBridgeNetworks = cpmOutput.bridgeNetworks or { };
+
+      cpmBridgeParentNetworks =
+        builtins.listToAttrs (
+          map
+            (bridgeName:
+              let
+                bridgeNetwork = cpmBridgeNetworks.${bridgeName};
+                parent =
+                  if builtins.isString (bridgeNetwork.parent or null) && bridgeNetwork.parent != "" then
+                    bridgeNetwork.parent
+                  else
+                    throw "FS-310-HDS-010-SDS-010-SMS-110: bridgeNetworks.${bridgeName}.parent is missing";
+              in
+              {
+                name = "${bridgeName}-parent";
+                value = {
+                  matchConfig.Name = parent;
+                  networkConfig.Bridge = bridgeName;
+                };
+              })
+            (builtins.attrNames cpmBridgeNetworks)
+        );
 
       bridgeNetdevs =
         builtins.listToAttrs (
@@ -155,7 +189,7 @@ let
       services.resolved.enable = lib.mkForce true;
 
       systemd.network.netdevs = bridgeNetdevs;
-      systemd.network.networks = bridgeNetworks;
+      systemd.network.networks = bridgeNetworks // cpmBridgeParentNetworks;
 
       containers = clientContainers;
 
@@ -214,14 +248,18 @@ let
 
   # ----- hostModuleFromPaths: compatibility path builder -----
   hostModuleFromPaths =
-    { hostName ? "s-router-test-clients"
-    , labSource ? "active-lab"
+    { # FS-310-HDS-010-SDS-010-SMS-110: caller must supply hostName for non-default harness targets.
+      hostName ? "s-router-test-clients"
+    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply labSource for non-default lab sources.
+      labSource ? "active-lab"
     , intentPath ? null
     , inventoryPath ? null
     , clientsPath ? null
     , routingSopsPath ? null
-    , mode ? "test"
-    , siteName ? "site-a"
+    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply mode for non-test materialization.
+      mode ? "test"
+    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply siteName for non-default site targets.
+      siteName ? "site-a"
     , ...
     }:
 
@@ -238,20 +276,30 @@ let
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
 
-      cpmOutput =
-        cpm.clientFixtures.buildFromPaths {
-          intentPath = resolvedIntentPath;
-          inventoryPath = resolvedInventoryPath;
-          sopsPath =
-            if routingSopsPath != null then
-              routingSopsPath
-            else
-              "${network-labs}/${labSource}/sops.nix";
-          fixture = {
-            kind = "emulated-clients";
-            inherit hostName siteName;
-          };
+      fixtureArgs = {
+        intentPath = resolvedIntentPath;
+        inventoryPath = resolvedInventoryPath;
+        sopsPath =
+          if routingSopsPath != null then
+            routingSopsPath
+          else
+            "${network-labs}/${labSource}/sops.nix";
+        fixture = {
+          kind = "emulated-clients";
+          inherit hostName siteName;
         };
+      };
+
+      unwrapModuleDefault = value:
+        if builtins.isAttrs value && value ? content then value.content else value;
+
+      cpmOutput =
+        if cpm.clientFixtures ? buildFromPaths then
+          cpm.clientFixtures.buildFromPaths fixtureArgs
+        else
+          unwrapModuleDefault (
+            (cpm.clientFixtures.hostModuleFromPaths (fixtureArgs // { inherit lib; }))._module.args.clientFixture
+          );
     in
     hostModuleFromCpmOutput { inherit cpmOutput mode; };
 
@@ -269,6 +317,7 @@ let
     if explicitCpm != null then
       hostModuleFromCpmOutput {
         cpmOutput = explicitCpm;
+        # FS-310-HDS-010-SDS-010-SMS-110: caller must supply mode for non-test materialization.
         mode = rendererInput.mode or "test";
       }
     else
