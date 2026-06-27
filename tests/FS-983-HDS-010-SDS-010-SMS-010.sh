@@ -5,8 +5,8 @@
 #
 # Trace chain: FS-983 > HDS-010 > SDS-010 > SMS-010
 # Owning repo: network-renderer-access-endpoint-nixos
-# Renderer API: hostModuleFromPaths
-# Inventory: active-lab (s-router-test-clients)
+# Renderer API: hostModule
+# Fixture: direct CPM endpointAssignment contract
 #
 # SMS-010 acceptance predicates (source-scan):
 #   A1: CPM endpoint fixture records consumed through provider interface
@@ -63,7 +63,7 @@ write_nix() {
 echo "=== ${TEST_NAME} Construction Test ==="
 echo "Trace: FS-983 > HDS-010 > SDS-010 > SMS-010"
 echo "Renderer: network-renderer-access-endpoint-nixos"
-echo "Host: s-router-test-clients | Lab: active-lab"
+echo "Host: s-router-test-clients | Fixture: direct CPM"
 echo ""
 
 # ================================================================
@@ -305,10 +305,19 @@ let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
 
-  # Build the renderer module normally
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.boundary-client = {
+      mode = "dhcp";
+      name = "boundary-client";
+      bridge = "client";
+    };
+  };
+
+  # Build the renderer module from explicit CPM endpointAssignment.
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 

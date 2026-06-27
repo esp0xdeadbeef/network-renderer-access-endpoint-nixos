@@ -5,8 +5,8 @@
 #
 # Trace chain: FS-720 > HDS-010 > SDS-010 > SMS-050
 # Owning repo: network-renderer-access-endpoint-nixos
-# Renderer API: hostModuleFromPaths
-# Inventory: active-lab (s-router-test-clients)
+# Renderer API: hostModule
+# Fixture: direct CPM endpointAssignment + bridgeNetworks contract
 #
 # SMS-050 acceptance predicates covered:
 #   SMS-050 (Bridge Netdev Emission) — bridge netdevs with Kind=bridge
@@ -50,9 +50,30 @@ eval_module_json() {
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.test-client = {
+      mode = "static";
+      name = "test-client";
+      bridge = "client";
+      static = {
+        address = "10.20.20.10";
+        prefixLength = 24;
+        gateway4 = "10.20.20.1";
+        address6 = "fd42:dead:beef:20::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:20::1";
+      };
+    };
+    bridgeNetworks.client = {
+      mode = "vlan";
+      parent = "eth0";
+      vlan = 302;
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 
@@ -324,9 +345,30 @@ write_nix "$SCRATCH/seeded-neg-n1.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.test-client = {
+      mode = "static";
+      name = "test-client";
+      bridge = "client";
+      static = {
+        address = "10.20.20.10";
+        prefixLength = 24;
+        gateway4 = "10.20.20.1";
+        address6 = "fd42:dead:beef:20::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:20::1";
+      };
+    };
+    bridgeNetworks.client = {
+      mode = "vlan";
+      parent = "eth0";
+      vlan = 302;
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 
@@ -382,9 +424,30 @@ write_nix "$SCRATCH/seeded-neg-n2.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.test-client = {
+      mode = "static";
+      name = "test-client";
+      bridge = "client";
+      static = {
+        address = "10.20.20.10";
+        prefixLength = 24;
+        gateway4 = "10.20.20.1";
+        address6 = "fd42:dead:beef:20::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:20::1";
+      };
+    };
+    bridgeNetworks.client = {
+      mode = "vlan";
+      parent = "eth0";
+      vlan = 302;
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 
