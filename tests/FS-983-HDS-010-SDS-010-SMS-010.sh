@@ -71,13 +71,15 @@ echo ""
 # ================================================================
 echo "--- SMS-010 A1: CPM Consumption (source scan) ---"
 
-# A1a: CPM compileAndBuildFromPaths must be called
-CPM_CALLS=$(grep -n 'compileAndBuildFromPaths' "${SRC_FILES[@]}" 2>/dev/null || true)
+# A1a: CPM fixture build helper must be called. Older CPM revisions exposed
+# compileAndBuildFromPaths directly; current revisions route this through
+# clientFixtures.buildFromPaths/hostModuleFromPaths.
+CPM_CALLS=$(grep -n 'compileAndBuildFromPaths\|clientFixtures.*buildFromPaths\|clientFixtures.*hostModuleFromPaths' "${SRC_FILES[@]}" 2>/dev/null || true)
 if [ -n "$CPM_CALLS" ]; then
-  pass "A1a — CPM compileAndBuildFromPaths called in source"
+  pass "A1a — CPM fixture build helper called in source"
   echo "       $(echo "$CPM_CALLS" | head -1)"
 else
-  fail "A1a — CPM compileAndBuildFromPaths NOT FOUND in source"
+  fail "A1a — CPM fixture build helper NOT FOUND in source"
 fi
 
 # A1b: endpointAssignment consumed from CPM output (not raw inventory)

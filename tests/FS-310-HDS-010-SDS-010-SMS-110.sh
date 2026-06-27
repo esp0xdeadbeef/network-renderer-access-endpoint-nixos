@@ -171,14 +171,14 @@ echo ""
 echo "--- P4: AE-HIGH-3/4/5 — Harness invocation params KNOWN_GAP (source scan) ---"
 
 # P4a: hostName has KNOWN_GAP comment
-if grep -B1 'hostName.*rendererInput\.hostName or' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
+if grep -B1 'hostName ? "s-router-test-clients"' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
   pass "P4a — hostName has KNOWN_GAP comment referencing SMS-110"
 else
   fail "P4a — hostName missing KNOWN_GAP comment"
 fi
 
 # P4b: labSource has KNOWN_GAP comment
-if grep -B1 'labSource.*rendererInput\.labSource or' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
+if grep -B1 'labSource ? "active-lab"' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
   pass "P4b — labSource has KNOWN_GAP comment referencing SMS-110"
 else
   fail "P4b — labSource missing KNOWN_GAP comment"
@@ -192,7 +192,7 @@ else
 fi
 
 # P4d: siteName has KNOWN_GAP comment
-if grep -B1 'siteName = rendererInput\.siteName or "site-a"' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
+if grep -B1 'siteName ? "site-a"' "$REPO_ROOT/lib/renderer.nix" 2>/dev/null | grep -q 'FS-310-HDS-010-SDS-010-SMS-110.*caller must supply'; then
   pass "P4d — siteName has KNOWN_GAP comment referencing SMS-110"
 else
   fail "P4d — siteName missing KNOWN_GAP comment"
