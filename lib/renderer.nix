@@ -6,62 +6,93 @@
 }:
 
 let
-  # ----- hostModuleFromPaths: the full NixOS module builder -----
-  # Consumes CPM output (which includes endpointAssignment from Phase 1)
-  # instead of re-parsing raw intent or inventory.
-  hostModuleFromPaths =
-    { hostName ? "s-router-test-clients"
-    , labSource ? "active-lab"
-    , intentPath ? null
-    , inventoryPath ? null
-    , clientsPath ? null
-    , routingSopsPath ? null
+  clientBuilders = import ./client-builders.nix { inherit lib pkgs; };
+
+  cpmSiteData = cpmOutput:
+    builtins.concatLists (
+      map builtins.attrValues (builtins.attrValues (cpmOutput.control_plane_model.data or { }))
+    );
+
+  endpointAssignmentsFromCpm = cpmOutput:
+    if cpmOutput ? endpointAssignment then
+      cpmOutput.endpointAssignment
+    else
+      builtins.foldl'
+        (acc: site: acc // (site.endpointAssignment or { }))
+        { }
+        (cpmSiteData cpmOutput);
+
+  endpointBridge = name: assignment:
+    let
+      bridge = assignment.bridge or null;
+      tenant = assignment.tenant or null;
+    in
+    if builtins.isString bridge && bridge != "" then
+      bridge
+    else if builtins.isString bridge && bridge == "" && builtins.isString tenant && tenant != "" then
+      tenant
+    else
+      throw "endpointAssignment.${name}.bridge is missing";
+
+  buildEndpointContainer = name: assignment:
+    let
+      mode =
+        if assignment ? mode then
+          assignment.mode
+        else
+          throw "endpointAssignment.${name}.mode is missing";
+      hostBridge = endpointBridge name assignment;
+      hostname = assignment.name or name;
+      static = assignment.static or { };
+      requireStatic = attr:
+        if builtins.hasAttr attr static then
+          static.${attr}
+        else
+          throw "endpointAssignment.${name}.static.${attr} is missing";
+      staticModule = clientBuilders.mkStaticEndpoint {
+        inherit hostname;
+        addr4 = "${requireStatic "address"}/${toString (requireStatic "prefixLength")}";
+        addr6 = "${requireStatic "address6"}/${toString (requireStatic "prefixLength6")}";
+        gw4 = requireStatic "gateway4";
+        gw6 = requireStatic "gateway6";
+      };
+      dhcpModule = clientBuilders.mkDhcpEndpoint {
+        inherit hostname;
+      };
+      mkContainer = module: {
+        autoStart = true;
+        privateNetwork = true;
+        inherit hostBridge;
+        config = module;
+      };
+    in
+    if mode == "dhcp" then
+      mkContainer dhcpModule
+    else if mode == "static" || mode == "static-only" then
+      mkContainer staticModule
+    else
+      throw "endpointAssignment.${name}.mode '${mode}' is unsupported";
+
+  buildContainersFromAssignment = endpointAssignments:
+    builtins.mapAttrs buildEndpointContainer endpointAssignments;
+
+  hostModuleFromCpmOutput =
+    { cpmOutput
     , mode ? "test"
-    , siteName ? "site-a"
-    , ...
+    ,
     }:
 
     { config, ... }:
 
     let
-      resolvedIntentPath =
-        if intentPath != null then
-          intentPath
+      endpointAssignments = endpointAssignmentsFromCpm cpmOutput;
+
+      clientContainers =
+        if cpmOutput ? containers then
+          cpmOutput.containers
         else
-          "${network-labs}/${labSource}/intent.nix";
+          buildContainersFromAssignment endpointAssignments;
 
-      resolvedInventoryPath =
-        if inventoryPath != null then
-          inventoryPath
-        else
-          "${network-labs}/${labSource}/inventory-nixos.nix";
-
-      # Build CPM output including Phase 1 endpointAssignment contract.
-      # CPM client-fixtures module produces containers, host network config,
-      # and endpointAssignment records from the model pipeline.
-      cpmOutput =
-        cpm.clientFixtures.buildFromPaths {
-          intentPath = resolvedIntentPath;
-          inventoryPath = resolvedInventoryPath;
-          sopsPath =
-            if routingSopsPath != null then
-              routingSopsPath
-            else
-              "${network-labs}/${labSource}/sops.nix";
-          fixture = {
-            kind = "emulated-clients";
-            hostName = "s-router-test-clients";
-            inherit siteName;
-          };
-        };
-
-      # CPM-built containers (replaces buildFixtureContainers raw inventory path)
-      clientContainers = cpmOutput.containers or { };
-
-      # Extract endpoint assignment records for Phase 2 consumption
-      endpointAssignments = cpmOutput.endpointAssignment or { };
-
-      # Bridge names from CPM containers
       clientBridges = lib.unique (
         builtins.map
           (container:
@@ -69,8 +100,36 @@ let
           )
           (builtins.attrValues clientContainers)
       );
-      effectiveBridges = builtins.filter (b: b != null) clientBridges;
+      effectiveBridges = builtins.filter (bridge: bridge != null) clientBridges;
 
+      bridgeNetdevs =
+        builtins.listToAttrs (
+          map
+            (bridge: {
+              name = bridge;
+              value.netdevConfig = {
+                Kind = "bridge";
+                Name = bridge;
+              };
+            })
+            effectiveBridges
+        );
+
+      bridgeNetworks =
+        builtins.listToAttrs (
+          map
+            (bridge: {
+              name = bridge;
+              value = {
+                matchConfig.Name = bridge;
+                networkConfig = {
+                  DHCP = "no";
+                  IPv6AcceptRA = false;
+                };
+              };
+            })
+            effectiveBridges
+        );
     in
     {
       system.stateVersion = lib.mkForce "25.11";
@@ -95,6 +154,9 @@ let
       networking.useHostResolvConf = lib.mkForce false;
       services.resolved.enable = lib.mkForce true;
 
+      systemd.network.netdevs = bridgeNetdevs;
+      systemd.network.networks = bridgeNetworks;
+
       containers = clientContainers;
 
       users.users.root.openssh.authorizedKeys.keys = [
@@ -102,6 +164,13 @@ let
       ];
 
       systemd.services.access-endpoint-renderer-dummy.enable = lib.mkForce false;
+
+      systemd.services.s-router-test-clients-endpoint-ready = {
+        description = "Endpoint fixture containers are rendered";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig.Type = "oneshot";
+        script = "true";
+      };
 
       systemd.services.access-endpoint-isolate-bridges = {
         description = "Block endpoint bridge egress to host management VLAN";
@@ -143,31 +212,67 @@ let
       ];
     };
 
-  # ----- hostModule: standard renderer interface wrapping hostModuleFromPaths -----
-  hostModule = rendererInput:
+  # ----- hostModuleFromPaths: compatibility path builder -----
+  hostModuleFromPaths =
+    { hostName ? "s-router-test-clients"
+    , labSource ? "active-lab"
+    , intentPath ? null
+    , inventoryPath ? null
+    , clientsPath ? null
+    , routingSopsPath ? null
+    , mode ? "test"
+    , siteName ? "site-a"
+    , ...
+    }:
+
     let
-      hostName = rendererInput.hostName or "s-router-test-clients";
-      labSource = rendererInput.labSource or "active-lab";
       resolvedIntentPath =
-        if rendererInput ? intent && rendererInput.intent != null then
-          rendererInput.intent
+        if intentPath != null then
+          intentPath
         else
           "${network-labs}/${labSource}/intent.nix";
+
       resolvedInventoryPath =
-        if rendererInput ? inventory && rendererInput.inventory != null then
-          rendererInput.inventory
+        if inventoryPath != null then
+          inventoryPath
         else
           "${network-labs}/${labSource}/inventory-nixos.nix";
+
+      cpmOutput =
+        cpm.clientFixtures.buildFromPaths {
+          intentPath = resolvedIntentPath;
+          inventoryPath = resolvedInventoryPath;
+          sopsPath =
+            if routingSopsPath != null then
+              routingSopsPath
+            else
+              "${network-labs}/${labSource}/sops.nix";
+          fixture = {
+            kind = "emulated-clients";
+            inherit hostName siteName;
+          };
+        };
     in
-    hostModuleFromPaths {
-      inherit hostName labSource;
-      intentPath = resolvedIntentPath;
-      inventoryPath = resolvedInventoryPath;
-      clientsPath = rendererInput.clients or null;
-      routingSopsPath = rendererInput.sops or null;
-      mode = rendererInput.mode or "test";
-      siteName = rendererInput.siteName or "site-a";
-    };
+    hostModuleFromCpmOutput { inherit cpmOutput mode; };
+
+  # ----- hostModule: standard renderer interface -----
+  hostModule = rendererInput:
+    let
+      explicitCpm =
+        if rendererInput ? controlPlane && rendererInput.controlPlane != null then
+          rendererInput.controlPlane
+        else if rendererInput ? cpm && rendererInput.cpm != null then
+          rendererInput.cpm
+        else
+          null;
+    in
+    if explicitCpm != null then
+      hostModuleFromCpmOutput {
+        cpmOutput = explicitCpm;
+        mode = rendererInput.mode or "test";
+      }
+    else
+      throw "network-renderer-access-endpoint-nixos.hostModule: 'cpm' or 'controlPlane' is required; use hostModuleFromPaths for path-based rendering";
 
 in
 {

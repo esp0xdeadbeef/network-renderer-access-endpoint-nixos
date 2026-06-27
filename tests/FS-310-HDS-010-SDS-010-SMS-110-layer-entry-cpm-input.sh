@@ -5,6 +5,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 labs_root="${NETWORK_LABS_ROOT:-${repo_root}/../network-labs}"
+fixture="${labs_root}/GAMP/SMT/layer-entry-poc/renderer-input/minimal-access-endpoint-cpm.nix"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/access-endpoint-cpm-entry.XXXXXX")"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
@@ -13,18 +14,14 @@ fail() {
   exit 1
 }
 
-[[ -f "${labs_root}/active-lab/intent.nix" ]] || fail "missing active-lab intent at ${labs_root}"
-[[ -f "${labs_root}/active-lab/inventory-nixos.nix" ]] || fail "missing active-lab inventory at ${labs_root}"
+[[ -f "${fixture}" ]] || fail "missing renderer-input fixture at ${fixture}"
 
 nix eval --impure --json --expr "
   let
     flake = builtins.getFlake \"path:${repo_root}\";
     system = builtins.currentSystem;
     renderer = flake.libBySystem.\${system}.renderer;
-    cpm = flake.inputs.network-control-plane-model.libBySystem.\${system}.compileAndBuildFromPaths {
-      inputPath = \"${labs_root}/active-lab/intent.nix\";
-      inventoryPath = \"${labs_root}/active-lab/inventory-nixos.nix\";
-    };
+    cpm = (import ${fixture}).controlPlane;
     moduleFn = renderer.hostModule {
       hostName = \"s-router-test-clients\";
       labSource = \"active-lab\";
