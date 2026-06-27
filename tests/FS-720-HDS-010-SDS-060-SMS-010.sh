@@ -124,15 +124,14 @@ echo ""
 echo "--- Check 2: Filename scan for validation-phase tokens ---"
 check2_violations=0
 
-file_hits=$(find "${repo_root}" -type f \
-  ! -path '*/\.git/*' \
-  ! -path '*/tests/*' \
-  ! -path '*/scripts/*' \
-  ! -path '*/GAMP/*' \
-  -name '*[Hh][Aa][Tt]*' -o \
-  -name '*[Ss][Aa][Tt]*' -o \
-  -name '*[Ss][Ii][Tt]*' -o \
-  -name '*[Ss][Mm][Tt]*' \
+file_hits=$(find "${repo_root}" \
+  \( -path '*/.git/*' -o -path '*/tests/*' -o -path '*/scripts/*' -o -path '*/GAMP/*' \) -prune -o \
+  -type f \
+  \( -name '*[Hh][Aa][Tt]*' \
+     -o -name '*[Ss][Aa][Tt]*' \
+     -o -name '*[Ss][Ii][Tt]*' \
+     -o -name '*[Ss][Mm][Tt]*' \) \
+  -print \
   2>/dev/null || true)
 
 if [[ -n "${file_hits}" ]]; then

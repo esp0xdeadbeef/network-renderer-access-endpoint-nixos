@@ -5,8 +5,8 @@
 #
 # Trace chain: FS-725 > HDS-020 > SDS-010 > SMS-010
 # Owning repo: network-renderer-access-endpoint-nixos
-# Renderer API: hostModuleFromPaths
-# Inventory: active-lab (s-router-test-clients)
+# Renderer API: hostModule
+# Fixture: direct CPM endpointAssignment + bridgeNetworks contract
 #
 # SMS predicates:
 #   P1: VLAN2 mgmt bridge exists and carries only management traffic
@@ -50,9 +50,43 @@ let
   pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
   lib = pkgs.lib;
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 
@@ -151,7 +185,7 @@ let
 in
 {
   test_host = "s-router-test-clients";
-  lab_source = "active-lab";
+  lab_source = "direct-cpm";
   networking_useDHCP = result.networking.useDHCP or "absent";
   bridges = map bridgeCheck bridgeNames;
   vlan_networks = map vlanCheck vlanNetworks;
@@ -176,7 +210,7 @@ NIXEOF
 echo "=== ${TEST_NAME} Construction Test ==="
 echo "Trace: FS-725 > HDS-020 > SDS-010 > SMS-010"
 echo "Renderer: network-renderer-access-endpoint-nixos"
-echo "Host: s-router-test-clients | Lab: active-lab"
+echo "Host: s-router-test-clients | Fixture: direct CPM"
 echo ""
 
 # Evaluate once
@@ -373,49 +407,31 @@ echo "--- P6-P7: Behavioral Seeded Negatives ---"
 # The renderer guard must throw MGMT_BRIDGE_ENDPOINT_TRAFFIC.
 # ============================================================
 
-# Create a temp inventory that adds a fixture endpoint on mgmt bridge
-write_nix "$SCRATCH/sn1-inventory.nix" <<'NIXEOF'
-let
-  flake = builtins.getFlake "REPO_PATH";
-  networkLabs = flake.inputs.network-labs;
-  original = import "${networkLabs}/active-lab/inventory-nixos.nix";
-in
-original // {
-  deployment = original.deployment // {
-    hosts = original.deployment.hosts // {
-      "s-router-test-clients" =
-        let
-          h = original.deployment.hosts."s-router-test-clients" or { };
-        in
-        h // {
-          hat = (h.hat or { }) // {
-            endpointClients = (h.hat.endpointClients or { }) // {
-              "sn1-endpoint-on-mgmt" = {
-                assignment = "dhcp";
-                bridge = "mgmt";
-              };
-            };
-          };
-        };
-    };
-  };
-}
-NIXEOF
-
 write_nix "$SCRATCH/sn1-test.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.sn1-endpoint-on-mgmt = {
+      mode = "dhcp";
+      name = "sn1-endpoint-on-mgmt";
+      bridge = "mgmt";
+      role = "endpoint";
+    };
+    bridgeNetworks.mgmt = {
+      mode = "vlan";
+      parent = "eth0";
+      vlan = 300;
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
-    inventoryPath = "SN1_INVENTORY_PATH";
+    cpm = cpmFixture;
+    mode = "test";
   };
 in
-moduleFn { config = { }; }
+  builtins.deepSeq ((moduleFn { config = { }; }).containers) true
 NIXEOF
-
-sed -i "s|SN1_INVENTORY_PATH|${SCRATCH}/sn1-inventory.nix|g" "$SCRATCH/sn1-test.nix"
 
 # Try to evaluate with the poisoned inventory — should throw
 SN1_ERR="$(nix eval --impure -f "$SCRATCH/sn1-test.nix" 2>&1 || true)"
@@ -427,44 +443,44 @@ if echo "$SN1_ERR" | grep -q "FS-725-HDS-020-SDS-010-SMS-010"; then
     fail "P6 (SN1) — error references FS-725-HDS-020-SDS-010-SMS-010 but wrong diagnostic (expected MGMT_BRIDGE_ENDPOINT_TRAFFIC)"
   fi
   # Recovery: remove the poisoned endpoint and verify success
-  write_nix "$SCRATCH/sn1-recovery-inventory.nix" <<'NIXEOF'
-let
-  flake = builtins.getFlake "REPO_PATH";
-  networkLabs = flake.inputs.network-labs;
-  original = import "${networkLabs}/active-lab/inventory-nixos.nix";
-in
-original // {
-  deployment = original.deployment // {
-    hosts = original.deployment.hosts // {
-      "s-router-test-clients" =
-        let
-          h = original.deployment.hosts."s-router-test-clients" or { };
-        in
-        h // {
-          hat = (h.hat or { }) // {
-            endpointClients = (h.hat.endpointClients or { });
-          };
-        };
-    };
-  };
-}
-NIXEOF
-
   write_nix "$SCRATCH/sn1-recovery.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    endpointAssignment.branch-client = {
+      mode = "dhcp";
+      name = "branch-client";
+      bridge = "branch";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
-    inventoryPath = "SN1_RECOVERY_PATH";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = { }; };
 in
 { containers = builtins.length (builtins.attrNames (result.containers or { })); }
 NIXEOF
-
-  sed -i "s|SN1_RECOVERY_PATH|${SCRATCH}/sn1-recovery-inventory.nix|g" "$SCRATCH/sn1-recovery.nix"
 
   SN1_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn1-recovery.nix" 2>&1)"
   if echo "$SN1_RECOVERY" | jq -e '.containers > 0' >/dev/null 2>&1; then
@@ -486,67 +502,37 @@ fi
 # but containers exist total. Guard must throw EMPTY_MANAGEMENT_ENDPOINT_INVENTORY.
 # ============================================================
 
-# Approach: use a minimal intent that produces empty endpointAssignment,
-# plus one fixture endpoint on a non-mgmt bridge.
-# This triggers: totalContainers > 0 && mgmtContainers == []
-
-# Create a minimal intent with no endpoint assignments
-write_nix "$SCRATCH/sn2-intent.nix" <<'NIXEOF'
-{
-  environment = {
-    enterprise = {
-      "test-enterprise" = {
-        site = {
-          "site-a" = {
-            endpointAssignment = { };
-          };
-        };
-      };
-    };
-  };
-}
-NIXEOF
-
-# Create inventory with one fixture endpoint on client bridge (non-mgmt)
-# and no mgmt bridge in bridgeNetworks
-write_nix "$SCRATCH/sn2-inventory.nix" <<'NIXEOF'
-{
-  deployment = {
-    hosts = {
-      "s-router-test-clients" = {
-        hat = {
-          endpointClients = {
-            "sn2-fixture-client" = {
-              assignment = "dhcp";
-              bridge = "client";
-            };
-          };
-        };
-        bridgeNetworks = {
-          "client" = { };
-        };
-      };
-    };
-  };
-}
-NIXEOF
-
 write_nix "$SCRATCH/sn2-test.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "dhcp";
+      name = "branch-client";
+      bridge = "branch";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
-    intentPath = "SN2_INTENT_PATH";
-    inventoryPath = "SN2_INVENTORY_PATH";
+    cpm = cpmFixture;
+    mode = "test";
   };
 in
-moduleFn { config = { }; }
+  builtins.deepSeq ((moduleFn { config = { }; }).containers) true
 NIXEOF
-
-sed -i "s|SN2_INTENT_PATH|${SCRATCH}/sn2-intent.nix|g" "$SCRATCH/sn2-test.nix"
-sed -i "s|SN2_INVENTORY_PATH|${SCRATCH}/sn2-inventory.nix|g" "$SCRATCH/sn2-test.nix"
 
 SN2_ERR="$(nix eval --impure -f "$SCRATCH/sn2-test.nix" 2>&1 || true)"
 

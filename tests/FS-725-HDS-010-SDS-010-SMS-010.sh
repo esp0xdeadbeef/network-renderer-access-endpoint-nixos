@@ -5,8 +5,8 @@
 #
 # Trace chain: FS-725 > HDS-010 > SDS-010 > SMS-010
 # Owning repo: network-renderer-access-endpoint-nixos
-# Renderer API: hostModuleFromPaths
-# Inventory: active-lab (s-router-test-clients)
+# Renderer API: hostModule
+# Fixture: direct CPM endpointAssignment + bridgeNetworks contract
 #
 # Covers all 8 SMS acceptance predicates with seeded negatives.
 # ============================================================================
@@ -42,9 +42,43 @@ eval_module_json() {
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
 
@@ -135,7 +169,7 @@ NIXEOF
 echo "=== ${TEST_NAME} Construction Test ==="
 echo "Trace: FS-725 > HDS-010 > SDS-010 > SMS-010"
 echo "Renderer: network-renderer-access-endpoint-nixos"
-echo "Host: s-router-test-clients | Lab: active-lab"
+echo "Host: s-router-test-clients | Fixture: direct CPM"
 echo ""
 
 # Evaluate once
@@ -281,9 +315,43 @@ write_nix "$SCRATCH/count-saddr.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
   script = result.systemd.services."access-endpoint-isolate-bridges".script or "";
@@ -342,9 +410,43 @@ write_nix "$SCRATCH/seeded-neg-p6.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
   # Simulate violation: change DHCP on branch bridge to "ipv4"
@@ -383,9 +485,43 @@ write_nix "$SCRATCH/seeded-neg-p7.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
   # Simulate violation: add IP Address to branch bridge
@@ -425,9 +561,43 @@ write_nix "$SCRATCH/seeded-neg-p8.nix" <<'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.branch-client = {
+      mode = "static";
+      name = "branch-client";
+      bridge = "branch";
+      static = {
+        address = "10.20.30.10";
+        prefixLength = 24;
+        gateway4 = "10.20.30.1";
+        address6 = "fd42:dead:beef:30::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:30::1";
+      };
+    };
+    endpointAssignment.mgmt-console = {
+      mode = "dhcp";
+      name = "mgmt-console";
+      bridge = "mgmt";
+      role = "management";
+    };
+    bridgeNetworks = {
+      mgmt = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 300;
+      };
+      branch = {
+        mode = "vlan";
+        parent = "eth0";
+        vlan = 301;
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
   # Simulate violation: remove isolate-bridges service

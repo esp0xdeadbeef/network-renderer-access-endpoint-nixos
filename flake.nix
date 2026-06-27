@@ -40,6 +40,7 @@
         {
           renderer = import ./lib/renderer.nix {
             inherit system pkgs lib;
+            inherit self;
             cpm = network-control-plane-model.libBySystem.${system};
             inherit (inputs) network-labs;
           };

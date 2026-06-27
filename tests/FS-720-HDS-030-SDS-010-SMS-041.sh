@@ -49,7 +49,7 @@ KNOWN_GAPS=(
   # All 6 SMS-041 KNOWN_GAPS resolved 2026-06-19:
   # - 4 SMS-reference gaps: resolved in prior commit (all throws now reference FS-720-HDS-030-SDS-010-SMS-041)
   # - GAP-BRIDGE-001: CPM bridge default resolved — lines 22-32 now throw MISSING_CPM_BRIDGE_FIELD/AMBIGUOUS_BRIDGE_DEFAULT
-  # - GAP-BRIDGE-002: fixture bridge default resolved — line 261 now throws MISSING_CPM_BRIDGE_FIELD/AMBIGUOUS_BRIDGE_DEFAULT
+  # - GAP-BRIDGE-002: obsolete raw fixture bridge path removed; renderer consumes CPM endpointAssignment only.
 )
 
 # ================================================================
@@ -288,32 +288,34 @@ check5_violations=0
 # The current code uses `or null` then throws on null → correct.
 # This check guards against regression to a behavioral default.
 
-# Verify gw4 uses `or null` not `or <ip-value>`
-GW4_NULL=$(grep -n 'gateway4 or null' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
-if [ -n "${GW4_NULL}" ]; then
-  echo "  PASS: gateway4 uses structural 'or null' (not behavioral default)"
-  echo "        $(echo "${GW4_NULL}" | head -1)"
+# Verify gw4 is required by fail-closed guard, not a behavioral default
+GW4_REQUIRE=$(grep -n 'requireStatic "gateway4"' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
+GW4_DIAG=$(grep -n 'HARDCODED_DEFAULT_REJECTED.*gateway4' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
+if [ -n "${GW4_REQUIRE}" ] && [ -n "${GW4_DIAG}" ]; then
+  echo "  PASS: gateway4 is required by fail-closed guard (not behavioral default)"
+  echo "        $(echo "${GW4_REQUIRE}" | head -1)"
 else
-  echo "  FAIL: gateway4 missing 'or null' — check for behavioral default or missing guard"
+  echo "  FAIL: gateway4 missing fail-closed guard or SMS-041 diagnostic"
   check5_violations=$((check5_violations + 1))
 fi
 
-# Verify gw6 uses `or null` not `or <ip-value>`
-GW6_NULL=$(grep -n 'gateway6 or null' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
-if [ -n "${GW6_NULL}" ]; then
-  echo "  PASS: gateway6 uses structural 'or null' (not behavioral default)"
-  echo "        $(echo "${GW6_NULL}" | head -1)"
+# Verify gw6 is required by fail-closed guard, not a behavioral default
+GW6_REQUIRE=$(grep -n 'requireStatic "gateway6"' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
+GW6_DIAG=$(grep -n 'HARDCODED_DEFAULT_REJECTED.*gateway6' "${repo_root}/lib/renderer.nix" 2>/dev/null || true)
+if [ -n "${GW6_REQUIRE}" ] && [ -n "${GW6_DIAG}" ]; then
+  echo "  PASS: gateway6 is required by fail-closed guard (not behavioral default)"
+  echo "        $(echo "${GW6_REQUIRE}" | head -1)"
 else
-  echo "  FAIL: gateway6 missing 'or null' — check for behavioral default or missing guard"
+  echo "  FAIL: gateway6 missing fail-closed guard or SMS-041 diagnostic"
   check5_violations=$((check5_violations + 1))
 fi
 
-# Verify gw4 null → throw exists
-GW4_THROW=$(grep -n 'gateway4' "${repo_root}/lib/renderer.nix" 2>/dev/null | grep -c 'throw' || true)
-if [ "${GW4_THROW}" -gt 0 ]; then
-  echo "  PASS: gateway4 null triggers throw (${GW4_THROW} match(es))"
+# Verify gw4/gw6 missing-field diagnostics exist
+GW_THROW_COUNT=$(grep -E 'gateway[46].*missing.*FS-720-HDS-030-SDS-010-SMS-041' "${repo_root}/lib/renderer.nix" 2>/dev/null | wc -l | tr -d ' ')
+if [ "${GW_THROW_COUNT}" -ge 2 ]; then
+  echo "  PASS: gateway4/gateway6 missing fields trigger SMS-041 diagnostics (${GW_THROW_COUNT} match(es))"
 else
-  echo "  FAIL: gateway4 missing throw on null — silent null would produce broken containers"
+  echo "  FAIL: gateway4/gateway6 missing-field diagnostics incomplete"
   check5_violations=$((check5_violations + 1))
 fi
 
@@ -776,7 +778,6 @@ in
   sms041_count = builtins.length (builtins.split "FS-720-HDS-030-SDS-010-SMS-041" src) - 1;
   # Verify bridge guard throws exist (not just comments)
   has_cpm_bridge_throw = has "MISSING_CPM_BRIDGE_FIELD: endpoint";
-  has_fixture_bridge_throw = has "MISSING_CPM_BRIDGE_FIELD: fixture endpoint";
   has_empty_bridge_throw = has "AMBIGUOUS_BRIDGE_DEFAULT: endpoint";
 }
 NIXEOF
@@ -796,7 +797,6 @@ if [ "${all_checks_passed}" = "true" ]; then
   B1_TRACE=$(echo "${B1_JSON}" | jq -r '.has_sms041_trace // false')
   B1_COUNT=$(echo "${B1_JSON}" | jq -r '.sms041_count // 0')
   B1_CPM_BR=$(echo "${B1_JSON}" | jq -r '.has_cpm_bridge_throw // false')
-  B1_FIX_BR=$(echo "${B1_JSON}" | jq -r '.has_fixture_bridge_throw // false')
   B1_EMPTY_BR=$(echo "${B1_JSON}" | jq -r '.has_empty_bridge_throw // false')
 
   echo "  B1 diagnostic identifiers (nix eval behavioral source proof):"
@@ -808,14 +808,13 @@ if [ "${all_checks_passed}" = "true" ]; then
   echo "    SMS-041 trace references:    ${B1_COUNT}"
   echo "  Bridge throw guards (executable position):"
   echo "    CPM bridge throw:            ${B1_CPM_BR}"
-  echo "    Fixture bridge throw:        ${B1_FIX_BR}"
   echo "    Empty bridge throw:          ${B1_EMPTY_BR}"
 
   B1_DIAG_OK=false
   [ "${B1_BRIDGE}" = "true" ] && [ "${B1_AMBIG}" = "true" ] && [ "${B1_HARD}" = "true" ] && [ "${B1_MODE}" = "true" ] && [ "${B1_MCF}" = "true" ] && B1_DIAG_OK=true
 
-  if [ "${B1_DIAG_OK}" = "true" ] && [ "${B1_CPM_BR}" = "true" ] && [ "${B1_FIX_BR}" = "true" ] && [ "${B1_EMPTY_BR}" = "true" ] && [ "${B1_COUNT}" -ge 8 ]; then
-    echo "  PASS: B1 — all 5 SMS-041 diagnostics + 3 bridge throw guards verified via nix eval (${B1_COUNT} trace references)"
+  if [ "${B1_DIAG_OK}" = "true" ] && [ "${B1_CPM_BR}" = "true" ] && [ "${B1_EMPTY_BR}" = "true" ] && [ "${B1_COUNT}" -ge 5 ]; then
+    echo "  PASS: B1 — all 5 SMS-041 diagnostics + 2 bridge throw guards verified via nix eval (${B1_COUNT} trace references)"
   else
     echo "  FAIL: B1 — missing diagnostics or bridge throws"
     all_checks_passed=false
@@ -829,9 +828,25 @@ write_nix "${SCRATCH}/b2-positive.nix" << 'NIXEOF'
 let
   flake = builtins.getFlake "REPO_PATH";
   renderer = flake.libBySystem.x86_64-linux.renderer;
-  moduleFn = renderer.hostModuleFromPaths {
+  cpmFixture = {
+    endpointAssignment.test-client = {
+      mode = "static";
+      name = "test-client";
+      bridge = "client";
+      static = {
+        address = "10.20.20.10";
+        prefixLength = 24;
+        gateway4 = "10.20.20.1";
+        address6 = "fd42:dead:beef:20::10";
+        prefixLength6 = 64;
+        gateway6 = "fd42:dead:beef:20::1";
+      };
+    };
+  };
+  moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
-    labSource = "active-lab";
+    cpm = cpmFixture;
+    mode = "test";
   };
   result = moduleFn { config = {}; };
   containerList = builtins.attrNames (result.containers or {});
@@ -873,7 +888,6 @@ in
   has_bridge_throw_guards = has "MISSING_CPM_BRIDGE_FIELD" && has "AMBIGUOUS_BRIDGE_DEFAULT";
   has_missing_bridge_throw = has "has no bridge field";
   has_empty_bridge_throw = has "bridge field is empty string";
-  has_fixture_bridge_absent_throw = has "fixture endpoint" && has "bridge field is absent";
 }
 NIXEOF
 
@@ -888,17 +902,15 @@ if [ "${all_checks_passed}" = "true" ]; then
   B3_THROWS=$(echo "${B3_JSON}" | jq -r '.has_bridge_throw_guards // false')
   B3_MISSING=$(echo "${B3_JSON}" | jq -r '.has_missing_bridge_throw // false')
   B3_EMPTY=$(echo "${B3_JSON}" | jq -r '.has_empty_bridge_throw // false')
-  B3_FIX_ABSENT=$(echo "${B3_JSON}" | jq -r '.has_fixture_bridge_absent_throw // false')
 
   echo "  B3 bridge gap resolution (nix eval source verification):"
   echo "    'or tenant' in fixture path:       ${B3_NO_OR}"
   echo "    Bridge throw guards present:       ${B3_THROWS}"
   echo "    Missing bridge throw (CPM):        ${B3_MISSING}"
   echo "    Empty bridge throw (CPM):          ${B3_EMPTY}"
-  echo "    Fixture bridge absent throw:       ${B3_FIX_ABSENT}"
 
-  if [ "${B3_NO_OR}" = "true" ] && [ "${B3_THROWS}" = "true" ] && [ "${B3_MISSING}" = "true" ] && [ "${B3_EMPTY}" = "true" ] && [ "${B3_FIX_ABSENT}" = "true" ]; then
-    echo "  PASS: B3 — GAP-BRIDGE-001 and GAP-BRIDGE-002 resolved (bridge defaults replaced with fail-closed throws)"
+  if [ "${B3_NO_OR}" = "true" ] && [ "${B3_THROWS}" = "true" ] && [ "${B3_MISSING}" = "true" ] && [ "${B3_EMPTY}" = "true" ]; then
+    echo "  PASS: B3 — bridge defaults replaced with fail-closed CPM endpointAssignment throws"
   else
     echo "  FAIL: B3 — bridge gaps not fully resolved"
     all_checks_passed=false
@@ -921,7 +933,7 @@ if [ "${all_checks_passed}" = "true" ]; then
   echo ""
   echo "GAP resolution summary:"
   echo "  - GAP-BRIDGE-001: CPM bridge default resolved (throws MISSING_CPM_BRIDGE_FIELD/AMBIGUOUS_BRIDGE_DEFAULT)"
-  echo "  - GAP-BRIDGE-002: fixture bridge default resolved (throws MISSING_CPM_BRIDGE_FIELD/AMBIGUOUS_BRIDGE_DEFAULT)"
+  echo "  - GAP-BRIDGE-002: obsolete raw fixture bridge path absent; CPM endpointAssignment is the only renderer input path"
   echo "  - 4 SMS-reference gaps: resolved (all throws reference FS-720-HDS-030-SDS-010-SMS-041)"
   echo "All fail-closed throws now reference FS-720-HDS-030-SDS-010-SMS-041"
   exit 0
