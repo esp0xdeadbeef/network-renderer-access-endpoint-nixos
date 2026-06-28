@@ -775,6 +775,66 @@ if [ "${all_checks_passed}" = "true" ]; then
 fi
 echo ""
 
+# B5: Behavioral Positive — valid CPM with no endpoint fixtures is a no-op, not fallback.
+echo "--- B5: Behavioral Positive — valid CPM with no endpoint fixtures emits no endpoint containers ---"
+write_nix "${SCRATCH}/b5-no-endpoint-profile.nix" << 'NIXEOF'
+let
+  flake = builtins.getFlake "REPO_PATH";
+  renderer = flake.libBySystem.x86_64-linux.renderer;
+
+  cpmFixture = {
+    control_plane_model = {
+      meta = {
+        traceId = "FS-166-HDS-010-SDS-010-SMS-900__active-lab-mini-runtime";
+        layerEntry.entryBoundary = "renderer-input";
+      };
+      data.acme.lab = {
+        enterprise = "acme";
+        siteName = "acme.lab";
+        runtimeTargets = { };
+      };
+      deployment.hosts.s-router-test-clients.bridgeNetworks = { };
+    };
+    deploymentHosts.s-router-test-clients.bridgeNetworks = { };
+  };
+
+  moduleFn = renderer.hostModule {
+    hostName = "s-router-test-clients";
+    cpm = cpmFixture;
+    mode = "test";
+  };
+  evalResult = builtins.tryEval (
+    builtins.deepSeq ((moduleFn { config = {}; }).containers) ((moduleFn { config = {}; }).containers)
+  );
+in
+{
+  success = evalResult.success;
+  container_count =
+    if evalResult.success then
+      builtins.length (builtins.attrNames evalResult.value)
+    else
+      -1;
+}
+NIXEOF
+
+B5_JSON=$(nix eval --impure --json -f "${SCRATCH}/b5-no-endpoint-profile.nix" 2>&1) || {
+  echo "  FAIL: B5 — no-endpoint CPM profile eval failed: ${B5_JSON}"
+  all_checks_passed=false
+  B5_JSON="{}"
+}
+
+if [ "${all_checks_passed}" = "true" ]; then
+  B5_SUCCESS=$(echo "${B5_JSON}" | jq -r '.success // false')
+  B5_CC=$(echo "${B5_JSON}" | jq -r '.container_count // -1')
+  if [ "${B5_SUCCESS}" = "true" ] && [ "${B5_CC}" -eq 0 ]; then
+    echo "  PASS: B5 — valid no-endpoint CPM profile evaluates with 0 endpoint containers"
+  else
+    echo "  FAIL: B5 — expected successful no-endpoint eval with 0 containers, got success=${B5_SUCCESS} container_count=${B5_CC}"
+    all_checks_passed=false
+  fi
+fi
+echo ""
+
 # B4: Behavioral Positive — CPM contract structure guard verification
 echo "--- B4: Behavioral — CPM contract structure guard (_cpmStructureValid) verification ---"
 write_nix "${SCRATCH}/b4-cpm-structure.nix" << 'NIXEOF'
@@ -835,7 +895,7 @@ echo "  Check 3 (client-list walks):  ${check3_violations} new violation(s)"
 echo "  Check 4 (fallback recovery):  ${check4_violations} new violation(s)"
 echo "  Check 5 (diagnostics):        ${DIAG_FOUND}/${DIAG_TOTAL} present"
 echo "  Seeded negatives: N1 (inventory import), N2 (CPM-missing fallback), N3 (tenant/client-list walking)"
-echo "  Behavioral proof:  B1 (positive), B2 (diagnostics), B3 (fallback guard), B4 (structure guard)"
+echo "  Behavioral proof:  B1 (positive), B2 (diagnostics), B3 (fallback guard), B5 (no-endpoint no-op), B4 (structure guard)"
 echo "  KNOWN_GAPS:                   ${#KNOWN_GAPS[@]}"
 echo "  Total new violations:         ${total_new_violations}"
 echo ""
@@ -851,6 +911,7 @@ if [[ "${all_checks_passed}" == "true" ]]; then
   echo "  3 active seeded negatives verified (detection + recovery)."
   echo "  5/5 diagnostic identifiers verified via nix eval behavioral proof."
   echo "  3 guard functions (_cpmStructureValid, _endpointAssignmentPresent, _unauthorizedInventoryFallback) verified."
+  echo "  Valid no-endpoint CPM profiles verified as no-op endpoint materialization."
   echo "  Diagnostic gaps resolved (none)."
   exit 0
 else
