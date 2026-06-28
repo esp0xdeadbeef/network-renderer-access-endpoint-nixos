@@ -1,3 +1,6 @@
+# FS-720-HDS-030-SDS-010-SMS-041 and FS-983-HDS-010-SDS-010-SMS-010:
+# endpoint containers consume CPM assignment fields and use eth0 only as the
+# NixOS private-network container-local interface.
 { lib, pkgs }:
 
 let
