@@ -270,13 +270,17 @@ let
       enterpriseData = cpmEnterprises;
       siteData = cpmSiteData cpmOutput;
       fixtureEps = { };
+      hasTopEndpointAssignments = (cpmOutput.endpointAssignment or { }) != { };
+      hasContainers = cpmOutput ? containers && cpmOutput.containers != { };
       _cpmStructureValid =
-        if cpmEnterprises == { } && siteData == [ ] && enterpriseData == { } && !(cpmOutput ? endpointAssignment) && !(cpmOutput ? containers) then
+        if cpmEnterprises == { } && siteData == [ ] && enterpriseData == { } && !hasTopEndpointAssignments && !hasContainers then
           throw "FS-720-HDS-030-SDS-010-SMS-021: MISSING_CPM_CONTRACT_GAP MISSING_CPM_CONTRACT_FIELD WRONG_LAYER_DIRECT_INVENTORY_IMPORT UNAUTHORIZED_FIXTURE_SOURCE: CPM output lacks endpointAssignment data; renderer refuses raw intent/inventory fixture discovery"
         else
           true;
       _endpointAssignmentPresent =
-        if endpointAssignments != { } || (cpmOutput ? containers && cpmOutput.containers != { }) then
+        if endpointAssignments != { } || hasContainers then
+          true
+        else if cpmEnterprises != { } || siteData != [ ] || enterpriseData != { } then
           true
         else
           throw "FS-720-HDS-030-SDS-010-SMS-021: MISSING_CPM_CONTRACT_GAP MISSING_CPM_CONTRACT_FIELD UNAUTHORIZED_INVENTORY_FALLBACK UNAUTHORIZED_FIXTURE_SOURCE: endpointAssignment is empty; renderer refuses inventory fallback";

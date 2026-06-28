@@ -48,7 +48,9 @@ implementation that read raw inventory.
 ### Fail-closed
 Missing CPM data must fail evaluation. Static endpoint fixtures throw on
 missing `gateway4`. Unsupported assignment modes throw with a diagnostic naming
-the endpoint and mode.
+the endpoint and mode. A valid CPM output with zero endpoint assignments is a
+no-endpoint fixture profile: the renderer emits no endpoint containers and does
+not read raw inventory as a fallback.
 
 ### No defaults
 The renderer does not supply hardcoded defaults for endpoint addresses, bridge
