@@ -4,6 +4,8 @@
 { lib, pkgs }:
 
 let
+  stripCidr = cidr: builtins.elemAt (lib.splitString "/" cidr) 0;
+
   basePackages = with pkgs; [
     bind
     curl
@@ -96,16 +98,15 @@ let
               IPv6AcceptRA = ipv6AcceptRA;
               MulticastDNS = "yes";
             };
-            routes = [
-              {
+            routes =
+              lib.optional (stripCidr addr4 != gw4) {
                 Destination = "0.0.0.0/0";
                 Gateway = gw4;
               }
-              {
+              ++ lib.optional (stripCidr addr6 != gw6) {
                 Destination = "::/0";
                 Gateway = gw6;
-              }
-            ];
+              };
           };
 
           services.avahi = lib.mkIf mdnsClient {
