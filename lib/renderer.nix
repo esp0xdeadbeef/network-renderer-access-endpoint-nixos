@@ -41,6 +41,56 @@ let
     let attrs = builtins.filter builtins.isAttrs values;
     in if attrs == [ ] then { } else builtins.head attrs;
 
+  maxInterfaceNameLength = 15;
+
+  shortenHostBridgeName =
+    name:
+    if builtins.stringLength name <= maxInterfaceNameLength then
+      name
+    else
+      let
+        prefixLength = maxInterfaceNameLength - 7;
+        prefix = builtins.substring 0 prefixLength name;
+        suffix = builtins.substring 0 6 (builtins.hashString "sha256" name);
+      in
+      "${prefix}-${suffix}";
+
+  ensureUniqueHostBridgeNames =
+    names:
+    let
+      shortened = map
+        (name: {
+          original = name;
+          rendered = shortenHostBridgeName name;
+        })
+        names;
+      grouped = builtins.foldl'
+        (
+          acc: entry:
+          acc // {
+            ${entry.rendered} = (acc.${entry.rendered} or [ ]) ++ [ entry.original ];
+          }
+        )
+        { }
+        shortened;
+      collisions = lib.filterAttrs (_: originals: builtins.length originals > 1) grouped;
+    in
+    if collisions != { } then
+      throw ''
+        network-renderer-access-endpoint-nixos: host bridge name collision after shortening
+
+        ${builtins.toJSON collisions}
+      ''
+    else
+      builtins.listToAttrs (
+        map
+          (entry: {
+            name = entry.original;
+            value = entry.rendered;
+          })
+          shortened
+      );
+
   sourceClassesFromMeta = meta:
     if builtins.isAttrs (meta.sourceClasses or null) then safeValue meta.sourceClasses else { };
 
@@ -324,7 +374,7 @@ let
         else
           true;
 
-      clientContainers =
+      clientContainersRaw =
         builtins.seq _cpmStructureValid (
           builtins.seq _endpointAssignmentPresent (
             builtins.seq _unauthorizedInventoryFallback (
@@ -338,6 +388,36 @@ let
           )
         );
 
+      rawClientBridges = lib.unique (
+        builtins.map
+          (container:
+            if container ? hostBridge then container.hostBridge else null
+          )
+          (builtins.attrValues clientContainersRaw)
+      );
+
+      rawEffectiveBridges =
+        lib.unique (
+          (builtins.filter (bridge: bridge != null) rawClientBridges)
+          ++ (builtins.attrNames cpmBridgeNetworks)
+        );
+
+      bridgeNameMap = ensureUniqueHostBridgeNames rawEffectiveBridges;
+
+      renderedBridgeName = bridge:
+        if builtins.isString bridge && builtins.hasAttr bridge bridgeNameMap then
+          bridgeNameMap.${bridge}
+        else
+          bridge;
+
+      clientContainers = lib.mapAttrs
+        (_name: container:
+          if builtins.isAttrs container && builtins.isString (container.hostBridge or null) then
+            container // { hostBridge = renderedBridgeName container.hostBridge; }
+          else
+            container)
+        clientContainersRaw;
+
       clientBridges = lib.unique (
         builtins.map
           (container:
@@ -345,10 +425,11 @@ let
           )
           (builtins.attrValues clientContainers)
       );
+
       effectiveBridges =
         lib.unique (
-          (builtins.filter (bridge: bridge != null) clientBridges)
-          ++ (builtins.attrNames cpmBridgeNetworks)
+          builtins.filter (bridge: bridge != null) clientBridges
+          ++ map renderedBridgeName (builtins.attrNames cpmBridgeNetworks)
         );
 
       vlanBridgeNames =
@@ -386,7 +467,7 @@ let
                 name = "${bridgeName}-parent";
                 value = {
                   matchConfig.Name = parent;
-                  networkConfig.Bridge = bridgeName;
+                  networkConfig.Bridge = renderedBridgeName bridgeName;
                 };
               })
             (builtins.filter
@@ -432,7 +513,7 @@ let
                 value = {
                   matchConfig.Name = "${parent}.${toString vlan}";
                   networkConfig = {
-                    Bridge = bridgeName;
+                    Bridge = renderedBridgeName bridgeName;
                     DHCP = "no";
                     IPv6AcceptRA = false;
                   };
