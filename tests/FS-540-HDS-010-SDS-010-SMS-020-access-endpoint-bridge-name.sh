@@ -19,6 +19,7 @@ nix eval \
       flake = builtins.getFlake ("path:" + rendererRoot);
       system = builtins.currentSystem;
       labs = flake.inputs.network-labs;
+      nixpkgsLib = flake.inputs.nixpkgs.lib;
       cpmLib = flake.inputs.network-control-plane-model.libBySystem.${system};
       activeLab = "${labs}/active-lab";
       current = import "${labs}/current-lab/metadata.nix";
@@ -43,6 +44,16 @@ nix eval \
       renderedBridge = "br-mini--baff8b";
       networks = rendered.systemd.network.networks or {};
       netdevs = rendered.systemd.network.netdevs or {};
+      evaluatedContainer = (nixpkgsLib.nixosSystem {
+        inherit system;
+        modules = [ container.config ];
+      }).config;
+      eth0 = evaluatedContainer.systemd.network.networks."10-eth0";
+      stripCidr = cidr: builtins.elemAt (nixpkgsLib.splitString "/" cidr) 0;
+      ownAddresses = builtins.map stripCidr (eth0.networkConfig.Address or [ ]);
+      routeGateways =
+        builtins.filter (gateway: gateway != null)
+          (builtins.map (route: route.Gateway or null) (eth0.routes or [ ]));
       checks = {
         active_lab_selector_is_fs540 = current.traceId == "FS-540-HDS-010-SDS-010";
         access_dns_container_exists = builtins.hasAttr "dns-resolver-config-access-dns" containers;
@@ -52,6 +63,8 @@ nix eval \
         rendered_bridge_network_exists = builtins.hasAttr renderedBridge networks;
         rendered_bridge_netdev_exists = builtins.hasAttr renderedBridge netdevs;
         original_bridge_network_not_emitted = !(builtins.hasAttr originalBridge networks);
+        container_routes_do_not_self_gateway =
+          builtins.all (gateway: !(builtins.elem gateway ownAddresses)) routeGateways;
       };
     in
     {
@@ -61,6 +74,7 @@ nix eval \
       observed = {
         selector = current.traceId;
         inherit bridge originalBridge renderedBridge;
+        inherit ownAddresses routeGateways;
         containerNames = builtins.attrNames containers;
         networkNames = builtins.attrNames networks;
         netdevNames = builtins.attrNames netdevs;
