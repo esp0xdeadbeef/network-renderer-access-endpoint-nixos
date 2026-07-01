@@ -24,16 +24,16 @@ nix eval \
       activeLab = "${labs}/active-lab";
       current = import "${labs}/current-lab/metadata.nix";
       cpm = cpmLib.compileAndBuildFromPaths {
-        inputPath = "${activeLab}/intent.nix";
-        inventoryPath = "${activeLab}/inventory-nixos.nix";
+        inputPath = "${activeLab}/intent-s-router-test-clients.nix";
+        inventoryPath = "${activeLab}/inventory-s-router-test-clients.nix";
       };
       module = flake.libBySystem.${system}.renderer.hostModule {
         hostName = "s-router-test-clients";
         labSource = "active-lab";
         cpm = cpm;
         controlPlane = cpm;
-        inventory = "${activeLab}/inventory-nixos.nix";
-        clients = "${activeLab}/clients.nix";
+        inventory = "${activeLab}/inventory-s-router-test-clients.nix";
+        clients = "${activeLab}/clients-s-router-test-clients.nix";
         sops = "${activeLab}/sops-routing-s-router-test-clients.nix";
       };
       rendered = module { config = {}; };
@@ -44,11 +44,20 @@ nix eval \
       renderedBridge = "br-mini--baff8b";
       networks = rendered.systemd.network.networks or {};
       netdevs = rendered.systemd.network.netdevs or {};
-      evaluatedContainer = (nixpkgsLib.nixosSystem {
-        inherit system;
-        modules = [ container.config ];
-      }).config;
-      eth0 = evaluatedContainer.systemd.network.networks."10-eth0";
+      containerHasConfig = container ? config;
+      evaluatedContainer =
+        if containerHasConfig then
+          (nixpkgsLib.nixosSystem {
+            inherit system;
+            modules = [ container.config ];
+          }).config
+        else
+          {};
+      eth0 =
+        if containerHasConfig then
+          evaluatedContainer.systemd.network.networks."10-eth0"
+        else
+          { networkConfig.Address = [ ]; routes = [ ]; };
       stripCidr = cidr: builtins.elemAt (nixpkgsLib.splitString "/" cidr) 0;
       ownAddresses = builtins.map stripCidr (eth0.networkConfig.Address or [ ]);
       routeGateways =
@@ -57,6 +66,7 @@ nix eval \
       checks = {
         active_lab_selector_is_fs540 = current.traceId == "FS-540-HDS-010-SDS-010";
         access_dns_container_exists = builtins.hasAttr "dns-resolver-config-access-dns" containers;
+        access_dns_container_has_config = containerHasConfig;
         host_bridge_is_shortened = bridge == renderedBridge;
         host_bridge_not_overlong = builtins.isString bridge && builtins.stringLength bridge <= 15;
         original_bridge_not_emitted_as_container_bridge = bridge != originalBridge;
@@ -74,6 +84,7 @@ nix eval \
       observed = {
         selector = current.traceId;
         inherit bridge originalBridge renderedBridge;
+        inherit containerHasConfig;
         inherit ownAddresses routeGateways;
         containerNames = builtins.attrNames containers;
         networkNames = builtins.attrNames networks;
