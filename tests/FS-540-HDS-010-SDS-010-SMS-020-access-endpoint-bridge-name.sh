@@ -4,10 +4,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+network_labs_path="${NETWORK_LABS_PATH:-}"
 
 result_json="$(mktemp)"
 trap 'rm -f "${result_json}"' EXIT
 
+NETWORK_LABS_PATH="${network_labs_path}" \
 RENDERER_ROOT="${repo_root}" \
 nix eval \
   --extra-experimental-features 'nix-command flakes' \
@@ -16,25 +18,26 @@ nix eval \
   --expr '
     let
       rendererRoot = builtins.getEnv "RENDERER_ROOT";
+      networkLabsPath = builtins.getEnv "NETWORK_LABS_PATH";
       flake = builtins.getFlake ("path:" + rendererRoot);
       system = builtins.currentSystem;
-      labs = flake.inputs.network-labs;
+      labs =
+        if networkLabsPath == "" then
+          flake.inputs.network-labs
+        else
+          builtins.getFlake ("path:" + networkLabsPath);
       nixpkgsLib = flake.inputs.nixpkgs.lib;
       cpmLib = flake.inputs.network-control-plane-model.libBySystem.${system};
-      activeLab = "${labs}/active-lab";
-      current = import "${labs}/current-lab/metadata.nix";
+      sourceRoot = "${labs}/GAMP/SMT/FS-540-HDS-010-SDS-010-SMS-020";
       cpm = cpmLib.compileAndBuildFromPaths {
-        inputPath = "${activeLab}/intent-s-router-test-clients.nix";
-        inventoryPath = "${activeLab}/inventory-s-router-test-clients.nix";
+        inputPath = "${sourceRoot}/intent-test-clients.nix";
+        inventoryPath = "${sourceRoot}/inventory-test-clients.nix";
       };
       module = flake.libBySystem.${system}.renderer.hostModule {
         hostName = "s-router-test-clients";
-        labSource = "active-lab";
+        labSource = "FS-540-HDS-010-SDS-010-SMS-020";
         cpm = cpm;
         controlPlane = cpm;
-        inventory = "${activeLab}/inventory-s-router-test-clients.nix";
-        clients = "${activeLab}/clients-s-router-test-clients.nix";
-        sops = "${activeLab}/sops-routing-s-router-test-clients.nix";
       };
       rendered = module { config = {}; };
       containers = rendered.containers or {};
@@ -64,7 +67,6 @@ nix eval \
         builtins.filter (gateway: gateway != null)
           (builtins.map (route: route.Gateway or null) (eth0.routes or [ ]));
       checks = {
-        active_lab_selector_is_fs540 = current.traceId == "FS-540-HDS-010-SDS-010";
         access_dns_container_exists = builtins.hasAttr "dns-resolver-config-access-dns" containers;
         access_dns_container_has_config = containerHasConfig;
         host_bridge_is_shortened = bridge == renderedBridge;
@@ -82,7 +84,7 @@ nix eval \
       failed = builtins.filter (name: !(checks.${name})) (builtins.attrNames checks);
       inherit checks;
       observed = {
-        selector = current.traceId;
+        source = sourceRoot;
         inherit bridge originalBridge renderedBridge;
         inherit containerHasConfig;
         inherit ownAddresses routeGateways;
