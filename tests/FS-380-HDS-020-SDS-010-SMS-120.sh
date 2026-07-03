@@ -23,6 +23,8 @@ eval_file="${SCRATCH}/eval.nix"
 cat >"${eval_file}" <<NIX
 let
   flake = builtins.getFlake "${RENDERER_FLAKE}";
+  nixpkgsLib = flake.inputs.nixpkgs.lib;
+  system = builtins.currentSystem;
   renderer = flake.libBySystem.x86_64-linux.renderer;
   cpmFixture = {
     control_plane_model = {
@@ -63,6 +65,7 @@ let
           gateway6 = "fd42:380:120::1";
           prefixLength = 24;
           prefixLength6 = 64;
+          dnsServers = [ "10.38.120.1" ];
         };
       };
     };
@@ -76,6 +79,10 @@ let
   netdevs = result.systemd.network.netdevs or {};
   networks = result.systemd.network.networks or {};
   containers = result.containers or {};
+  endpointConfig = (nixpkgsLib.nixosSystem {
+    inherit system;
+    modules = [ containers.prod-like-vlan4-client01.config ];
+  }).config;
 in
 {
   netdevs = builtins.attrNames netdevs;
@@ -97,6 +104,7 @@ in
       hostBridge = c.hostBridge or null;
       privateNetwork = c.privateNetwork or null;
     };
+  containerDns = endpointConfig.systemd.network.networks."10-eth0".networkConfig.DNS or [];
   useNetworkd = result.networking.useNetworkd or null;
   useDHCP = result.networking.useDHCP or null;
 }
@@ -122,6 +130,7 @@ jq -e '
   and .container.hostBridge == "client"
   and .container.autoStart == true
   and .container.privateNetwork == true
+  and .containerDns == ["10.38.120.1"]
   and .useNetworkd == true
   and .useDHCP == false
 ' <<<"${json}" >/dev/null || {
