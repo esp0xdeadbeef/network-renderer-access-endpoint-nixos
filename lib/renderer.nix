@@ -348,7 +348,21 @@ let
           cpmOutput.control_plane_model.deployment.hosts.${hostName}.bridgeNetworks
         else
           { };
+      hostUplinks =
+        if builtins.isAttrs (cpmOutput.uplinks or null) then
+          cpmOutput.uplinks
+        else if builtins.isAttrs (cpmOutput.deploymentHosts.${hostName}.uplinks or null) then
+          cpmOutput.deploymentHosts.${hostName}.uplinks
+        else if builtins.isAttrs (cpmOutput.control_plane_model.deployment.hosts.${hostName}.uplinks or null) then
+          cpmOutput.control_plane_model.deployment.hosts.${hostName}.uplinks
+        else
+          { };
       cpmBridgeNetworks = hostBridgeNetworks;
+      hostUplinkNames = sortedAttrNames hostUplinks;
+      hostUplinkBridgeNames =
+        builtins.filter
+          (bridge: builtins.isString bridge && bridge != "")
+          (map (uplinkName: hostUplinks.${uplinkName}.bridge or null) hostUplinkNames);
       endpointAssignmentNames = sortedAttrNames endpointAssignments;
       isManagementAssignment = assignment:
         (assignment.role or null) == "management"
@@ -400,6 +414,7 @@ let
         lib.unique (
           (builtins.filter (bridge: bridge != null) rawClientBridges)
           ++ (builtins.attrNames cpmBridgeNetworks)
+          ++ hostUplinkBridgeNames
         );
 
       bridgeNameMap = ensureUniqueHostBridgeNames rawEffectiveBridges;
@@ -430,12 +445,18 @@ let
         lib.unique (
           builtins.filter (bridge: bridge != null) clientBridges
           ++ map renderedBridgeName (builtins.attrNames cpmBridgeNetworks)
+          ++ map renderedBridgeName hostUplinkBridgeNames
         );
 
       vlanBridgeNames =
         builtins.filter
           (bridgeName: (cpmBridgeNetworks.${bridgeName}.mode or null) == "vlan")
           (builtins.attrNames cpmBridgeNetworks);
+
+      vlanUplinkNames =
+        builtins.filter
+          (uplinkName: (hostUplinks.${uplinkName}.mode or null) == "vlan")
+          hostUplinkNames;
 
       requireBridgeNetworkField = bridgeName: field:
         let bridgeNetwork = cpmBridgeNetworks.${bridgeName};
@@ -449,34 +470,104 @@ let
         else
           throw "FS-720-HDS-010-SDS-010-SMS-050: bridgeNetworks.${bridgeName}.${field} is missing";
 
-      cpmBridgeParentNetworks =
+      requireUplinkField = uplinkName: field:
+        let uplink = hostUplinks.${uplinkName};
+        in
+        if builtins.hasAttr field uplink && uplink.${field} != "" then
+          uplink.${field}
+        else if field == "parent" then
+          throw "FS-725-HDS-020-SDS-010-SMS-010: uplinks.${uplinkName}.parent is missing"
+        else if field == "vlan" then
+          throw "FS-725-HDS-020-SDS-010-SMS-010: uplinks.${uplinkName}.vlan is missing"
+        else if field == "bridge" then
+          throw "FS-725-HDS-020-SDS-010-SMS-010: uplinks.${uplinkName}.bridge is missing"
+        else
+          throw "FS-725-HDS-020-SDS-010-SMS-010: uplinks.${uplinkName}.${field} is missing";
+
+      parentIfNames =
+        lib.unique (
+          (builtins.filter builtins.isString (map
+            (bridgeName:
+              let bridgeNetwork = cpmBridgeNetworks.${bridgeName};
+              in if builtins.isString (bridgeNetwork.parent or null) && bridgeNetwork.parent != "" then bridgeNetwork.parent else null)
+            (builtins.attrNames cpmBridgeNetworks)))
+          ++ (builtins.filter builtins.isString (map
+            (uplinkName:
+              let uplink = hostUplinks.${uplinkName};
+              in if builtins.isString (uplink.parent or null) && uplink.parent != "" then uplink.parent else null)
+            hostUplinkNames))
+        );
+
+      bridgeNetworkVlanIfNameFor = bridgeName:
+        "${requireBridgeNetworkField bridgeName "parent"}.${toString (requireBridgeNetworkField bridgeName "vlan")}";
+
+      uplinkVlanIfNameFor = uplinkName:
+        "${requireUplinkField uplinkName "parent"}.${toString (requireUplinkField uplinkName "vlan")}";
+
+      directBridgeNamesForParent = parentIf:
+        (map renderedBridgeName (builtins.filter
+          (bridgeName:
+            let bridgeNetwork = cpmBridgeNetworks.${bridgeName};
+            in (bridgeNetwork.mode or null) != "vlan"
+              && (bridgeNetwork.parent or null) == parentIf)
+          (builtins.attrNames cpmBridgeNetworks)))
+        ++ (map
+          (uplinkName: renderedBridgeName (requireUplinkField uplinkName "bridge"))
+          (builtins.filter
+            (uplinkName:
+              let uplink = hostUplinks.${uplinkName};
+              in (uplink.mode or null) != "vlan"
+                && (uplink.parent or null) == parentIf)
+            hostUplinkNames));
+
+      vlanChildrenForParent = parentIf:
+        (map bridgeNetworkVlanIfNameFor (builtins.filter
+          (bridgeName:
+            let bridgeNetwork = cpmBridgeNetworks.${bridgeName};
+            in (bridgeNetwork.mode or null) == "vlan"
+              && (bridgeNetwork.parent or null) == parentIf)
+          (builtins.attrNames cpmBridgeNetworks)))
+        ++ (map uplinkVlanIfNameFor (builtins.filter
+          (uplinkName:
+            let uplink = hostUplinks.${uplinkName};
+            in (uplink.mode or null) == "vlan"
+              && (uplink.parent or null) == parentIf)
+          hostUplinkNames));
+
+      parentNetworks =
         builtins.listToAttrs (
           map
-            (bridgeName:
+            (parentIf:
               let
-                bridgeNetwork = cpmBridgeNetworks.${bridgeName};
-                parent =
-                  if (bridgeNetwork.mode or null) == "vlan" then
-                    null
-                  else if builtins.isString (bridgeNetwork.parent or null) && bridgeNetwork.parent != "" then
-                    bridgeNetwork.parent
+                vlanChildren = lib.unique (vlanChildrenForParent parentIf);
+                directBridgeNames = lib.unique (directBridgeNamesForParent parentIf);
+                _singleDirectBridge =
+                  if builtins.length directBridgeNames <= 1 then
+                    true
                   else
-                    null;
+                    throw "FS-725-HDS-020-SDS-010-SMS-010: multiple non-vlan host attachments on parent ${parentIf}: ${builtins.concatStringsSep "," directBridgeNames}";
               in
-              {
-                name = "${bridgeName}-parent";
+              builtins.seq _singleDirectBridge {
+                name = "20-${parentIf}";
                 value = {
-                  matchConfig.Name = parent;
-                  networkConfig.Bridge = renderedBridgeName bridgeName;
+                  linkConfig = {
+                    ActivationPolicy = "always-up";
+                    RequiredForOnline = "no";
+                  };
+                  matchConfig.Name = parentIf;
+                  networkConfig = {
+                    ConfigureWithoutCarrier = true;
+                    DHCP = "no";
+                    IPv6AcceptRA = false;
+                    LinkLocalAddressing = "no";
+                  }
+                  // lib.optionalAttrs (vlanChildren != [ ]) { VLAN = vlanChildren; }
+                  // lib.optionalAttrs (builtins.length directBridgeNames == 1) {
+                    Bridge = builtins.head directBridgeNames;
+                  };
                 };
               })
-            (builtins.filter
-              (bridgeName:
-                let bridgeNetwork = cpmBridgeNetworks.${bridgeName};
-                in (bridgeNetwork.mode or null) != "vlan"
-                  && builtins.isString (bridgeNetwork.parent or null)
-                  && bridgeNetwork.parent != "")
-              (builtins.attrNames cpmBridgeNetworks))
+            parentIfNames
         );
 
       vlanNetdevs =
@@ -498,6 +589,27 @@ let
                 };
               })
             vlanBridgeNames
+        );
+
+      uplinkVlanNetdevs =
+        builtins.listToAttrs (
+          map
+            (uplinkName:
+              let
+                parent = requireUplinkField uplinkName "parent";
+                vlan = requireUplinkField uplinkName "vlan";
+              in
+              {
+                name = "40-${parent}.${toString vlan}";
+                value = {
+                  netdevConfig = {
+                    Kind = "vlan";
+                    Name = "${parent}.${toString vlan}";
+                  };
+                  vlanConfig.Id = vlan;
+                };
+              })
+            vlanUplinkNames
         );
 
       vlanNetworks =
@@ -522,6 +634,61 @@ let
             vlanBridgeNames
         );
 
+      uplinkVlanNetworks =
+        builtins.listToAttrs (
+          map
+            (uplinkName:
+              let
+                parent = requireUplinkField uplinkName "parent";
+                vlan = requireUplinkField uplinkName "vlan";
+                bridge = renderedBridgeName (requireUplinkField uplinkName "bridge");
+              in
+              {
+                name = "40-${parent}.${toString vlan}";
+                value = {
+                  matchConfig.Name = "${parent}.${toString vlan}";
+                  networkConfig = {
+                    Bridge = bridge;
+                    DHCP = "no";
+                    IPv6AcceptRA = false;
+                    LinkLocalAddressing = "no";
+                  };
+                };
+              })
+            vlanUplinkNames
+        );
+
+      hostUplinkNameForRenderedBridge = renderedBridge:
+        let
+          matches =
+            builtins.filter
+              (uplinkName:
+                builtins.isString (hostUplinks.${uplinkName}.bridge or null)
+                && renderedBridgeName hostUplinks.${uplinkName}.bridge == renderedBridge)
+              hostUplinkNames;
+        in
+        if matches == [ ] then null else builtins.head matches;
+
+      uplinkIpv4Dhcp = uplink:
+        uplink ? ipv4
+        && builtins.isAttrs uplink.ipv4
+        && ((uplink.ipv4.dhcp or false) || (uplink.ipv4.method or null) == "dhcp");
+
+      uplinkIpv6Dhcp = uplink:
+        uplink ? ipv6
+        && builtins.isAttrs uplink.ipv6
+        && ((uplink.ipv6.dhcp or false) || (uplink.ipv6.method or null) == "dhcp" || (uplink.ipv6.method or null) == "dhcp6");
+
+      uplinkIpv6AcceptRA = uplink:
+        uplink ? ipv6
+        && builtins.isAttrs uplink.ipv6
+        && ((uplink.ipv6.acceptRA or false) || (uplink.ipv6.method or null) == "slaac");
+
+      isManagementUplink = uplinkName: uplink:
+        uplinkName == "management"
+        || (uplink.management or false) == true
+        || (uplink.role or null) == "management";
+
       bridgeNetdevs =
         builtins.listToAttrs (
           map
@@ -538,18 +705,33 @@ let
       bridgeNetworks =
         builtins.listToAttrs (
           map
-            (bridge: {
-              name = bridge;
-              value = {
-                linkConfig.ActivationPolicy = "always-up";
-                matchConfig.Name = bridge;
-                networkConfig = {
-                  DHCP = "no";
-                  ConfigureWithoutCarrier = true;
-                  IPv6AcceptRA = false;
+            (bridge:
+              let
+                uplinkName = hostUplinkNameForRenderedBridge bridge;
+                uplink = if uplinkName == null then { } else hostUplinks.${uplinkName};
+                managementUplink = uplinkName != null && isManagementUplink uplinkName uplink;
+                hostIpv4Dhcp = managementUplink && uplinkIpv4Dhcp uplink;
+                hostIpv6Dhcp = managementUplink && uplinkIpv6Dhcp uplink;
+                hostIpv6RA = managementUplink && uplinkIpv6AcceptRA uplink;
+                dhcpMode =
+                  if hostIpv4Dhcp && hostIpv6Dhcp then "yes"
+                  else if hostIpv4Dhcp then "ipv4"
+                  else if hostIpv6Dhcp then "ipv6"
+                  else "no";
+              in
+              {
+                name = bridge;
+                value = {
+                  linkConfig.ActivationPolicy = "always-up";
+                  matchConfig.Name = bridge;
+                  networkConfig = {
+                    DHCP = dhcpMode;
+                    ConfigureWithoutCarrier = true;
+                    IPv6AcceptRA = hostIpv6RA;
+                    LinkLocalAddressing = if hostIpv6Dhcp || hostIpv6RA then "ipv6" else "no";
+                  };
                 };
-              };
-            })
+              })
             effectiveBridges
         );
     in
@@ -579,8 +761,8 @@ let
       environment.etc."network-renderer-access-endpoint/provenance.json".text =
         builtins.toJSON provenance;
 
-      systemd.network.netdevs = bridgeNetdevs // vlanNetdevs;
-      systemd.network.networks = bridgeNetworks // cpmBridgeParentNetworks // vlanNetworks;
+      systemd.network.netdevs = bridgeNetdevs // vlanNetdevs // uplinkVlanNetdevs;
+      systemd.network.networks = bridgeNetworks // parentNetworks // vlanNetworks // uplinkVlanNetworks;
 
       containers = clientContainers;
 
