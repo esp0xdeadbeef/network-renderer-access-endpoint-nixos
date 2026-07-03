@@ -208,6 +208,10 @@ let
         addr6 = "${requireStatic "address6"}/${toString (requireStatic "prefixLength6")}";
         gw4 = requireStatic "gateway4";
         gw6 = requireStatic "gateway6";
+        dnsServers = static.dnsServers or [
+          (requireStatic "gateway4")
+          (requireStatic "gateway6")
+        ];
       };
       dhcpModule = clientBuilders.mkDhcpEndpoint {
         inherit hostname;
