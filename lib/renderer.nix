@@ -392,15 +392,40 @@ let
         else
           true;
 
+      _hostParticipationGuard =
+        let
+          hostServiceFields = [ "dhcpServer" "DHCPServer" "dns" "DNS" "nat" "NAT" "gateway" "Gateway" "firewall" "Firewall" "IPMasquerade" ];
+          checkBridge = _name: bridgeData:
+            let
+              fields = if builtins.isAttrs bridgeData then builtins.attrNames bridgeData else [ ];
+              violations = builtins.filter (f: builtins.elem f hostServiceFields) fields;
+              active = builtins.filter
+                (f:
+                  let v = bridgeData.${f};
+                  in v == true || v == "yes" || v == "enabled" || (builtins.isAttrs v && (v.enabled or false) == true))
+                violations;
+            in
+            if active != [ ] then
+              throw "FS-983-HDS-010-SDS-010-SMS-010: HOST_PARTICIPATION_VIOLATION: bridge ${_name} declares host-side service(s) ${builtins.concatStringsSep "," active}; s-router-test-clients host must not provision DHCP server, DNS, NAT, gateway, or endpoint firewall per FS-725"
+            else
+              true;
+        in
+        if builtins.isAttrs cpmBridgeNetworks then
+          builtins.deepSeq (builtins.mapAttrs checkBridge cpmBridgeNetworks) true
+        else
+          true;
+
       clientContainersRaw =
         builtins.seq _cpmStructureValid (
           builtins.seq _endpointAssignmentPresent (
             builtins.seq _unauthorizedInventoryFallback (
               builtins.seq _managementBridgeContract (
+                builtins.seq _hostParticipationGuard (
                 if cpmOutput ? containers then
                   cpmOutput.containers
                 else
                   buildContainersFromAssignment endpointAssignments
+                )
               )
             )
           )

@@ -394,6 +394,53 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------
+# N4: HOST_PARTICIPATION_VIOLATION — verify renderer rejects
+# host-side DHCP server on s-router-test-clients.
+# Construct CPM fixture with bridge network DHCPServer=true and
+# verify the renderer throws HOST_PARTICIPATION_VIOLATION.
+# ---------------------------------------------------------------
+write_nix "$SCRATCH/seeded-neg-n4.nix" <<'NIXEOF'
+let
+  flake = builtins.getFlake "REPO_PATH";
+  renderer = flake.libBySystem.x86_64-linux.renderer;
+
+  cpmFixture = {
+    endpointAssignment.test-endpoint = {
+      mode = "dhcp";
+      name = "test-endpoint";
+      bridge = "bad-bridge";
+    };
+    bridgeNetworks.bad-bridge = {
+      DHCPServer = true;
+      subnet = "10.99.99.0/24";
+    };
+  };
+
+  moduleFn = renderer.hostModule {
+    hostName = "s-router-test-clients";
+    cpm = cpmFixture;
+    mode = "test";
+  };
+in
+builtins.deepSeq (moduleFn { config = {}; }) "ok"
+NIXEOF
+
+set +e
+N4_OUTPUT=$(nix eval --impure -f "$SCRATCH/seeded-neg-n4.nix" 2>&1)
+N4_RC=$?
+set -e
+
+if [ "$N4_RC" -ne 0 ]; then
+  if echo "$N4_OUTPUT" | grep -q "HOST_PARTICIPATION_VIOLATION"; then
+    pass "N4 — renderer throws HOST_PARTICIPATION_VIOLATION when bridge network has DHCPServer=true (host-side service rejected)"
+  else
+    fail "N4 — renderer threw but not with HOST_PARTICIPATION_VIOLATION: $(echo "$N4_OUTPUT" | tail -5)"
+  fi
+else
+  fail "N4 — renderer accepted bridge network with DHCPServer=true (HOST_PARTICIPATION_VIOLATION not enforced)"
+fi
+
 # ================================================================
 # Summary
 # ================================================================
