@@ -574,7 +574,7 @@ let
                   if builtins.length directBridgeNames <= 1 then
                     true
                   else
-                    throw "FS-725-HDS-020-SDS-010-SMS-010: multiple non-vlan host attachments on parent ${parentIf}: ${builtins.concatStringsSep "," directBridgeNames}";
+                    throw "FS-040-HDS-010-SDS-010-SMS-020: multiple non-vlan host attachments on parent ${parentIf} at host ${hostName}: ${builtins.concatStringsSep "," directBridgeNames}";
               in
               builtins.seq _singleDirectBridge {
                 name = "20-${parentIf}";
