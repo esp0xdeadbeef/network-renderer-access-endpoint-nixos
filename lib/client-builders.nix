@@ -48,10 +48,10 @@ let
     };
 
   mkDhcpEndpoint =
-    { hostname
-    , dhcp4 ? true
-    , dhcp6 ? false
-    ,
+    {
+      hostname,
+      dhcp4 ? true,
+      dhcp6 ? false,
     }:
     moduleArgs:
     lib.mkMerge [
@@ -61,10 +61,14 @@ let
           matchConfig.Name = "eth0";
           networkConfig = {
             DHCP =
-              if dhcp4 && dhcp6 then "yes"
-              else if dhcp4 then "ipv4"
-              else if dhcp6 then "ipv6"
-              else "no";
+              if dhcp4 && dhcp6 then
+                "yes"
+              else if dhcp4 then
+                "ipv4"
+              else if dhcp6 then
+                "ipv6"
+              else
+                "no";
             IPv6AcceptRA = dhcp6;
             Domains = [ "lan." ];
           };
@@ -73,25 +77,29 @@ let
             # Derive the DHCPv6 DUID from the already-stable interface MAC so an
             # enrolled reservation identity survives that rebuild boundary.
             DUIDType = "link-layer";
+            # Start the stateful DHCPv6 exchange deterministically even when a
+            # managed RA is delayed or networkd does not use it as its trigger.
+            # The router-side RA contract remains independently required.
+            WithoutRA = "solicit";
           };
         };
       }
     ];
 
   mkStaticEndpoint =
-    { hostname
-    , addr4
-    , gw4
-    , addr6
-    , gw6
-    , dnsServers ? [
+    {
+      hostname,
+      addr4,
+      gw4,
+      addr6,
+      gw6,
+      dnsServers ? [
         gw4
         gw6
-      ]
-    , ipv6AcceptRA ? false
-    , mdnsClient ? false
-    , extraModules ? [ ]
-    ,
+      ],
+      ipv6AcceptRA ? false,
+      mdnsClient ? false,
+      extraModules ? [ ],
     }:
     { lib, ... }@moduleArgs:
     lib.mkMerge (
