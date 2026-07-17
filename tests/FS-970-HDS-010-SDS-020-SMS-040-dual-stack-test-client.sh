@@ -36,6 +36,7 @@ result="$(
     in {
       dhcp = network.networkConfig.DHCP;
       ipv6AcceptRA = network.networkConfig.IPv6AcceptRA;
+      ipv6PrivacyExtensions = network.networkConfig.IPv6PrivacyExtensions or null;
       dhcpV6DuidType = network.dhcpV6Config.DUIDType or null;
       dhcpV6WithoutRA = network.dhcpV6Config.WithoutRA or null;
     }
@@ -45,6 +46,7 @@ result="$(
 jq -e '
   .dhcp == "yes"
   and .ipv6AcceptRA == true
+  and .ipv6PrivacyExtensions == false
   and .dhcpV6DuidType == "link-layer"
   and .dhcpV6WithoutRA == "solicit"
 ' <<<"${result}" >/dev/null || {
