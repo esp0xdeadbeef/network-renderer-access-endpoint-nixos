@@ -1,0 +1,3 @@
+# Regression Log
+
+- state=solved | target=FS-970-HDS-010-SDS-020-SMS-040 deterministic DHCPv6 reservation client identity | construction_evidence=`NETWORK_REPO_DIRECT_TEST_OK=1 ./run-all-tests.sh` passes 15/15, including the focused row that proves the DHCPv6 endpoint emits a stable link-layer DUID, stateful solicitation, and `IPv6PrivacyExtensions=false` | prior_live_failure=the isolated VLAN398 cold-stage run through CLAB `3aa56a0759ea8ace38b6285288b97edfac9558d7` acquired the enrolled DHCPv6 address but also emitted one temporary global address because privacy extensions remained implicit | live_status=pending downstream cold-stage and exact NixOS/CLAB SMS rerun from the pushed renderer revision.

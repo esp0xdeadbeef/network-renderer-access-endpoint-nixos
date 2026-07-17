@@ -70,6 +70,10 @@ let
               else
                 "no";
             IPv6AcceptRA = dhcp6;
+            # A protected reservation requires one predictable enrolled IPv6
+            # address. Do not derive temporary privacy addresses from the
+            # stateful DHCPv6 address that carries that stable identity.
+            IPv6PrivacyExtensions = lib.mkIf dhcp6 false;
             Domains = [ "lan." ];
           };
           dhcpV6Config = lib.mkIf dhcp6 {
