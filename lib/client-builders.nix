@@ -68,6 +68,12 @@ let
             IPv6AcceptRA = dhcp6;
             Domains = [ "lan." ];
           };
+          dhcpV6Config = lib.mkIf dhcp6 {
+            # Test-client machine IDs can change when the container is rebuilt.
+            # Derive the DHCPv6 DUID from the already-stable interface MAC so an
+            # enrolled reservation identity survives that rebuild boundary.
+            DUIDType = "link-layer";
+          };
         };
       }
     ];
