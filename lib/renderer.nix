@@ -186,6 +186,10 @@ let
       hostBridge = endpointBridge name assignment;
       hostname = assignment.name or name;
       static = assignment.static or { };
+      dhcp = assignment.dhcp or { };
+      hasExplicitDhcpContract = assignment ? dhcp;
+      dhcp4 = (dhcp ? servedPrefix4) || !hasExplicitDhcpContract;
+      dhcp6 = dhcp ? servedPrefix6;
       requireStatic = attr:
         if builtins.hasAttr attr static then
           static.${attr}
@@ -214,7 +218,7 @@ let
         ];
       };
       dhcpModule = clientBuilders.mkDhcpEndpoint {
-        inherit hostname;
+        inherit hostname dhcp4 dhcp6;
       };
       mkContainer = module: {
         autoStart = true;
