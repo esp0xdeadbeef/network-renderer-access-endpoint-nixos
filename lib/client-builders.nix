@@ -49,6 +49,8 @@ let
 
   mkDhcpEndpoint =
     { hostname
+    , dhcp4 ? true
+    , dhcp6 ? false
     ,
     }:
     moduleArgs:
@@ -58,8 +60,12 @@ let
         systemd.network.networks."10-eth0" = {
           matchConfig.Name = "eth0";
           networkConfig = {
-            DHCP = "ipv4";
-            IPv6AcceptRA = true;
+            DHCP =
+              if dhcp4 && dhcp6 then "yes"
+              else if dhcp4 then "ipv4"
+              else if dhcp6 then "ipv6"
+              else "no";
+            IPv6AcceptRA = dhcp6;
             Domains = [ "lan." ];
           };
         };
