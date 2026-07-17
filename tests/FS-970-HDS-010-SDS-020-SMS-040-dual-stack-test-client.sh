@@ -36,12 +36,17 @@ result="$(
     in {
       dhcp = network.networkConfig.DHCP;
       ipv6AcceptRA = network.networkConfig.IPv6AcceptRA;
+      dhcpV6DuidType = network.dhcpV6Config.DUIDType or null;
     }
   '
 )"
 
-jq -e '.dhcp == "yes" and .ipv6AcceptRA == true' <<<"${result}" >/dev/null || {
-  echo "FAIL FS-970 dual-stack test client: endpoint did not request DHCPv4 and DHCPv6" >&2
+jq -e '
+  .dhcp == "yes"
+  and .ipv6AcceptRA == true
+  and .dhcpV6DuidType == "link-layer"
+' <<<"${result}" >/dev/null || {
+  echo "FAIL FS-970 dual-stack test client: DHCPv4/DHCPv6 or stable DUID contract missing" >&2
   exit 1
 }
 
