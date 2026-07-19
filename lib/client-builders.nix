@@ -104,8 +104,48 @@ let
       ipv6AcceptRA ? false,
       mdnsClient ? false,
       extraModules ? [ ],
+      runtimeAddressAssignments ? [ ],
     }:
     { lib, ... }@moduleArgs:
+    let
+      runtimeAddressServices = builtins.listToAttrs (
+        lib.imap0
+          (index: assignment: {
+            name = "access-endpoint-runtime-ipv6-address-${toString index}";
+            value = {
+              description = "Materialize protected runtime IPv6 endpoint address";
+              wantedBy = [ "multi-user.target" ];
+              after = [ "network-online.target" ];
+              wants = [ "network-online.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = lib.escapeShellArgs [
+                  "${pkgs.python3}/bin/python3"
+                  (toString ./runtime-protected-ipv6-address.py)
+                  "--source"
+                  assignment.sourceFile
+                  "--delegated-prefix-length"
+                  (toString assignment.delegatedPrefixLength)
+                  "--tenant-prefix-length"
+                  (toString assignment.perTenantPrefixLength)
+                  "--slot"
+                  (toString assignment.slot)
+                  "--interface-identifier"
+                  assignment.interfaceIdentifier
+                  "--target-prefix-length"
+                  (toString assignment.prefixLength)
+                  "--assign-interface"
+                  assignment.interfaceName
+                  "--ip-command"
+                  "${pkgs.iproute2}/bin/ip"
+                ];
+              };
+            };
+          })
+          runtimeAddressAssignments
+      );
+    in
     lib.mkMerge (
       [
         (mkBaseEndpoint hostname moduleArgs)
@@ -138,6 +178,8 @@ let
             nssmdns4 = true;
             nssmdns6 = true;
           };
+
+          systemd.services = runtimeAddressServices;
         }
       ]
       ++ evalModules moduleArgs extraModules
