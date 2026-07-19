@@ -9,7 +9,8 @@
 # Verifies that:
 # - s-router-test-clients-endpoint-ready.service waits for sops-nix.service
 # - access-endpoint-isolate-bridges.service waits for sops-nix.service
-# - No oneshot secret services exist in the renderer
+# - No oneshot service creates, copies, symlinks, decrypts, or places a secret
+#   file; consuming an already-declared read-only source is not materialization
 #
 # Active seeded negatives:
 #   SN1 — construct a module where endpoint-ready has NO sops-nix after;
@@ -27,14 +28,46 @@ echo ""
 
 failures=0
 
+ordering="$({
+  REPO_ROOT="${repo_root}" nix eval --impure --json --expr '
+    let
+      flake = builtins.getFlake ("path:" + builtins.getEnv "REPO_ROOT");
+      module = flake.libBySystem.${builtins.currentSystem}.renderer.hostModule {
+        hostName = "s-router-test-clients";
+        mode = "test";
+        cpm = {
+          endpointAssignment.probe = {
+            mode = "static";
+            name = "probe";
+            bridge = "client";
+            static = {
+              address = "192.0.2.2";
+              prefixLength = 24;
+              gateway4 = "192.0.2.1";
+              address6 = "2001:db8::2";
+              prefixLength6 = 64;
+              gateway6 = "2001:db8::1";
+            };
+          };
+          bridgeNetworks.client = { };
+        };
+      };
+      evaluated = module { config = { }; };
+    in {
+      endpointReady = evaluated.systemd.services.s-router-test-clients-endpoint-ready.after;
+      isolateBridges = evaluated.systemd.services.access-endpoint-isolate-bridges.after;
+    }
+  '
+} 2>"${tmp_dir}/ordering.stderr")"
+
 # ============================================================
 # Check 1: endpoint-ready service has sops-nix.service in after
 # ============================================================
 echo "--- Check 1: s-router-test-clients-endpoint-ready waits for sops-nix ---"
 
-# Find the endpoint-ready service definition and verify sops ordering
-if grep -A10 'systemd.services.s-router-test-clients-endpoint-ready' "${repo_root}/lib/renderer.nix" 2>/dev/null | \
-   grep -q 'sops-nix.service'; then
+# Evaluate the module so harmless source-layout refactors cannot create a false
+# failure while the emitted unit ordering is unchanged.
+if jq -e '.endpointReady | index("sops-nix.service") != null' <<<"${ordering}" >/dev/null; then
   echo "  PASS: s-router-test-clients-endpoint-ready has sops-nix.service in after"
 else
   echo "  FAIL: s-router-test-clients-endpoint-ready missing sops-nix.service ordering"
@@ -47,8 +80,7 @@ echo ""
 # ============================================================
 echo "--- Check 2: access-endpoint-isolate-bridges waits for sops-nix ---"
 
-if grep -A10 'systemd.services.access-endpoint-isolate-bridges' "${repo_root}/lib/renderer.nix" 2>/dev/null | \
-   grep -q 'sops-nix.service'; then
+if jq -e '.isolateBridges | index("sops-nix.service") != null' <<<"${ordering}" >/dev/null; then
   echo "  PASS: access-endpoint-isolate-bridges has sops-nix.service in after"
 else
   echo "  FAIL: access-endpoint-isolate-bridges missing sops-nix.service ordering"
@@ -57,15 +89,15 @@ fi
 echo ""
 
 # ============================================================
-# Check 3: No oneshot secret services in the renderer
+# Check 3: No oneshot secret-file materialization in the renderer
 # ============================================================
-echo "--- Check 3: No oneshot secret-materialization services ---"
+echo "--- Check 3: No oneshot secret-file materialization services ---"
 
 oneshot_hits=$(grep -rn 'sops -d\|ln -sf.*secrets\|writeShellScript.*secrets\|ExecStart.*secrets' \
   "${repo_root}/lib/" --include='*.nix' 2>/dev/null || true)
 
 if [[ -z "${oneshot_hits}" ]]; then
-  echo "  PASS: No oneshot secret services detected in renderer lib/"
+  echo "  PASS: No service decrypts, creates, copies, symlinks, or places secret files"
 else
   echo "  FAIL: Oneshot secret service(s) found:"
   echo "${oneshot_hits}"

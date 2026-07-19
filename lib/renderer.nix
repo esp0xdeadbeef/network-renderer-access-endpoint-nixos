@@ -176,6 +176,63 @@ let
     else
       throw "FS-720-HDS-030-SDS-010-SMS-041: MISSING_CPM_BRIDGE_FIELD: endpoint endpointAssignment.${name}.bridge must be a non-empty string";
 
+  runtimeAddressAssignmentsFor = name: assignment:
+    let
+      raw = assignment.runtimeAddressAssignments or [ ];
+      pow2 = exponent: builtins.foldl' (value: _: value * 2) 1 (lib.replicate exponent null);
+      invalid = index: detail:
+        throw "FS-230-HDS-010-SDS-010-SMS-040: endpointAssignment.${name}.runtimeAddressAssignments[${toString index}] ${detail}";
+      normalize = index: runtime:
+        if !builtins.isAttrs runtime then
+          invalid index "must be an attribute set"
+        else if (runtime.family or null) != "ipv6" then
+          invalid index "must declare family=ipv6"
+        else if (runtime.sourceClass or null) != "protected" then
+          invalid index "must declare sourceClass=protected"
+        else if !builtins.isString (runtime.sourceFile or null)
+          || !(lib.hasPrefix "/run/secrets/" runtime.sourceFile)
+          || runtime.sourceFile == "/run/secrets/" then
+          invalid index "must reference a non-empty /run/secrets/... sourceFile"
+        else if !builtins.isInt (runtime.delegatedPrefixLength or null)
+          || runtime.delegatedPrefixLength < 0
+          || runtime.delegatedPrefixLength > 64 then
+          invalid index "has an invalid delegatedPrefixLength"
+        else if !builtins.isInt (runtime.perTenantPrefixLength or null)
+          || runtime.perTenantPrefixLength < runtime.delegatedPrefixLength
+          || runtime.perTenantPrefixLength > 64 then
+          invalid index "has an invalid perTenantPrefixLength"
+        else if !builtins.isInt (runtime.slot or null)
+          || runtime.slot < 0
+          || runtime.slot >= pow2 (runtime.perTenantPrefixLength - runtime.delegatedPrefixLength) then
+          invalid index "has a slot outside the delegated prefix"
+        else if !builtins.isString (runtime.interfaceIdentifier or null)
+          || runtime.interfaceIdentifier == "" then
+          invalid index "must declare a non-empty interfaceIdentifier"
+        else if (runtime.prefixLength or null) != 128 then
+          invalid index "must declare prefixLength=128"
+        else if !builtins.isString (runtime.interfaceName or null)
+          || runtime.interfaceName == "" then
+          invalid index "must declare a non-empty interfaceName"
+        else
+          {
+            inherit (runtime)
+              delegatedPrefixLength
+              family
+              interfaceIdentifier
+              interfaceName
+              perTenantPrefixLength
+              prefixLength
+              slot
+              sourceClass
+              sourceFile
+              ;
+          };
+    in
+    if !builtins.isList raw then
+      throw "FS-230-HDS-010-SDS-010-SMS-040: endpointAssignment.${name}.runtimeAddressAssignments must be a list"
+    else
+      lib.imap0 normalize raw;
+
   buildEndpointContainer = name: assignment:
     let
       mode =
@@ -190,6 +247,7 @@ let
       hasExplicitDhcpContract = assignment ? dhcp;
       dhcp4 = (dhcp ? servedPrefix4) || !hasExplicitDhcpContract;
       dhcp6 = dhcp ? servedPrefix6;
+      runtimeAddressAssignments = runtimeAddressAssignmentsFor name assignment;
       requireStatic = attr:
         if builtins.hasAttr attr static then
           static.${attr}
@@ -208,6 +266,7 @@ let
           );
       staticModule = clientBuilders.mkStaticEndpoint {
         inherit hostname;
+        inherit runtimeAddressAssignments;
         addr4 = "${requireStatic "address"}/${toString (requireStatic "prefixLength")}";
         addr6 = "${requireStatic "address6"}/${toString (requireStatic "prefixLength6")}";
         gw4 = requireStatic "gateway4";
@@ -220,14 +279,29 @@ let
       dhcpModule = clientBuilders.mkDhcpEndpoint {
         inherit hostname dhcp4 dhcp6;
       };
-      mkContainer = module: {
-        autoStart = true;
-        privateNetwork = true;
-        inherit hostBridge;
-        config = module;
-      };
+      runtimeSourceMounts = builtins.listToAttrs (
+        map
+          (runtime: {
+            name = runtime.sourceFile;
+            value = {
+              hostPath = runtime.sourceFile;
+              isReadOnly = true;
+            };
+          })
+          runtimeAddressAssignments
+      );
+      mkContainer = module:
+        builtins.deepSeq runtimeAddressAssignments {
+          autoStart = true;
+          privateNetwork = true;
+          inherit hostBridge;
+          config = module;
+          bindMounts = runtimeSourceMounts;
+        };
     in
-    if mode == "dhcp" then
+    if mode == "dhcp" && runtimeAddressAssignments != [ ] then
+      throw "FS-230-HDS-010-SDS-010-SMS-040: endpointAssignment.${name}.runtimeAddressAssignments require an explicit static endpoint assignment"
+    else if mode == "dhcp" then
       mkContainer dhcpModule
     else if mode == "static" || mode == "static-only" then
       mkContainer staticModule
@@ -372,6 +446,21 @@ let
           (bridge: builtins.isString bridge && bridge != "")
           (map (uplinkName: hostUplinks.${uplinkName}.bridge or null) hostUplinkNames);
       endpointAssignmentNames = sortedAttrNames endpointAssignments;
+      runtimeAddressAssignmentNames =
+        builtins.filter
+          (name: runtimeAddressAssignmentsFor name endpointAssignments.${name} != [ ])
+          endpointAssignmentNames;
+      runtimeContainerDependencies = builtins.listToAttrs (
+        map
+          (name: {
+            name = "container@${name}";
+            value = {
+              after = [ "sops-nix.service" ];
+              wants = [ "sops-nix.service" ];
+            };
+          })
+          runtimeAddressAssignmentNames
+      );
       isManagementAssignment = assignment:
         (assignment.role or null) == "management"
         || (assignment.kind or null) == "management"
@@ -803,47 +892,49 @@ let
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAqEmMbztRhj2zE1dXf5Z+Ow7mXXXE6sNAG4/hrIOrmD deadbeef@codex-jail"
       ];
 
-      systemd.services.access-endpoint-renderer-dummy.enable = lib.mkForce false;
+      systemd.services = runtimeContainerDependencies // {
+        access-endpoint-renderer-dummy.enable = lib.mkForce false;
 
-      systemd.services.s-router-test-clients-endpoint-ready = {
-        description = "Endpoint fixture containers are rendered";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "sops-nix.service" ];
-        wants = [ "sops-nix.service" ];
-        serviceConfig.Type = "oneshot";
-        script = "true";
-      };
-
-      systemd.services.access-endpoint-isolate-bridges = {
-        description = "Block endpoint bridge egress to host management VLAN";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "sops-nix.service" "systemd-networkd.service" "network-online.target" ];
-        wants = [ "sops-nix.service" "systemd-networkd.service" "network-online.target" ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
+        s-router-test-clients-endpoint-ready = {
+          description = "Endpoint fixture containers are rendered";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "sops-nix.service" ];
+          wants = [ "sops-nix.service" ];
+          serviceConfig.Type = "oneshot";
+          script = "true";
         };
-        script = ''
-          # Ensure the filter forward chain exists with netfilter hook
-          nft list chain inet filter forward >/dev/null 2>&1 || \
-            nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
 
-          # Recreate chain if it exists without a hook (from a bad prior run)
-          nft list chain inet filter forward 2>/dev/null | grep -q 'type filter hook' || {
-            nft delete chain inet filter forward 2>/dev/null || true
-            nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
-          }
+        access-endpoint-isolate-bridges = {
+          description = "Block endpoint bridge egress to host management VLAN";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "sops-nix.service" "systemd-networkd.service" "network-online.target" ];
+          wants = [ "sops-nix.service" "systemd-networkd.service" "network-online.target" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            # Ensure the filter forward chain exists with netfilter hook
+            nft list chain inet filter forward >/dev/null 2>&1 || \
+              nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
 
-          # Block endpoint bridge subnets from reaching vlan2 (real ISP)
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.20.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.30.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.40.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.50.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.60.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.70.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.20.80.0/24 drop 2>/dev/null || true
-          nft add rule inet filter forward oif vlan2 ip saddr 10.50.40.0/24 drop 2>/dev/null || true
-        '';
+            # Recreate chain if it exists without a hook (from a bad prior run)
+            nft list chain inet filter forward 2>/dev/null | grep -q 'type filter hook' || {
+              nft delete chain inet filter forward 2>/dev/null || true
+              nft add chain inet filter forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+            }
+
+            # Block endpoint bridge subnets from reaching vlan2 (real ISP)
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.20.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.30.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.40.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.50.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.60.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.70.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.20.80.0/24 drop 2>/dev/null || true
+            nft add rule inet filter forward oif vlan2 ip saddr 10.50.40.0/24 drop 2>/dev/null || true
+          '';
+        };
       };
 
       assertions = [
