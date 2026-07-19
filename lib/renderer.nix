@@ -388,6 +388,7 @@ let
     { cpmOutput
     , hostName ? "s-router-test-clients"
     , mode ? "test"
+    , sopsModule ? null
     ,
     }:
 
@@ -858,6 +859,11 @@ let
         );
     in
     {
+      # Secret delivery is a consumer-selected realization module. The
+      # renderer composes that explicit module into the host without reading,
+      # decrypting, copying, or inferring protected values.
+      imports = lib.optional (sopsModule != null) sopsModule;
+
       system.stateVersion = lib.mkForce "25.11";
 
       environment.systemPackages = with pkgs; [
@@ -1000,7 +1006,16 @@ let
             (cpm.clientFixtures.hostModuleFromPaths (fixtureArgs // { inherit lib; }))._module.args.clientFixture
           );
     in
-    hostModuleFromCpmOutput { inherit cpmOutput hostName mode; };
+    hostModuleFromCpmOutput {
+      inherit cpmOutput hostName mode;
+      sopsModule =
+        if routingSopsPath == null then
+          null
+        else if builtins.isString routingSopsPath then
+          builtins.toPath routingSopsPath
+        else
+          routingSopsPath;
+    };
 
   # ----- hostModule: standard renderer interface -----
   hostModule = rendererInput:
@@ -1019,6 +1034,16 @@ let
         hostName = rendererInput.hostName or "s-router-test-clients";
         # FS-310-HDS-010-SDS-010-SMS-110: caller must supply mode for non-test materialization.
         mode = rendererInput.mode or "test";
+        sopsModule =
+          let
+            selected = rendererInput.sops or null;
+          in
+          if selected == null then
+            null
+          else if builtins.isString selected then
+            builtins.toPath selected
+          else
+            selected;
       }
     else
       throw "network-renderer-access-endpoint-nixos.hostModule: 'cpm' or 'controlPlane' is required; use hostModuleFromPaths for path-based rendering";
