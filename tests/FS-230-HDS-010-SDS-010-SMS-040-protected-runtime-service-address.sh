@@ -12,14 +12,24 @@ result="$({
     let
       flake = builtins.getFlake ("path:" + builtins.getEnv "REPO_ROOT");
       lab = import (flake.inputs.network-labs + "/GAMP/SMT/FS-230-HDS-010-SDS-010-SMS-040/intent-test-clients.nix");
+      sopsModule = flake.inputs.network-labs + "/GAMP/SMT/FS-230-HDS-010-SDS-010-SMS-040/sops-routing-s-router-test-clients.nix";
       module = flake.libBySystem.${builtins.currentSystem}.renderer.hostModule {
         cpm = lab;
         hostName = "s-router-test-clients";
         mode = "test";
+        sops = sopsModule;
       };
       host = flake.inputs.nixpkgs.lib.nixosSystem {
         system = builtins.currentSystem;
-        modules = [ module ];
+        modules = [
+          ({ lib, ... }: {
+            options.sops.secrets = lib.mkOption {
+              type = lib.types.attrs;
+              default = {};
+            };
+          })
+          module
+        ];
       };
       runtimeUnit = "access-endpoint-runtime-ipv6-address-0";
       describe = name:
@@ -37,6 +47,10 @@ result="$({
     in {
       names = builtins.attrNames host.config.containers;
       endpoints = builtins.listToAttrs (map (name: { inherit name; value = describe name; }) (builtins.attrNames host.config.containers));
+      protectedSource = let secret = host.config.sops.secrets."fs230-lab-dmz-ipv6-prefix"; in {
+        inherit (secret) key mode path;
+        sopsFile = builtins.toString secret.sopsFile;
+      };
     }
   '
 } 2>"${tmp_dir}/eval.stderr")"
@@ -77,6 +91,13 @@ jq -e '
     and (.hostAfter | index("sops-nix.service") == null)
     and (.hostWants | index("sops-nix.service") == null)
   ))
+  and .protectedSource == {
+    key: "protected-prefix",
+    mode: "0400",
+    path: "/run/secrets/fs230-lab-dmz-ipv6-prefix",
+    sopsFile: .protectedSource.sopsFile
+  }
+  and (.protectedSource.sopsFile | endswith("/GAMP/SMT/FS-230-HDS-010-SDS-010-SMS-040/secrets/sops-fs230.json"))
 ' <<<"${result}" >/dev/null
 
 printf '%s\n' '2001:db8:230::/48' >"${tmp_dir}/prefix"
