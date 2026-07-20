@@ -117,17 +117,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1784569660,
-        "narHash": "sha256-Q1fiSSsWnOG5SO6SsZI/srvG1JBAfXikzSt1ekXsi1A=",
+        "lastModified": 1784570518,
+        "narHash": "sha256-eDNSs4c7zQ2tT66ndZKbZSWTQt4rnFL9kQVd5xm+mYE=",
         "owner": "esp0xdeadbeef",
         "repo": "network-realization-model",
-        "rev": "759ed91eb1ea7524951cba99357828223c26b2e7",
+        "rev": "00ae5ceb2f56210bcf0e04eaf9208f05bda05d42",
         "type": "github"
       },
       "original": {
         "owner": "esp0xdeadbeef",
         "repo": "network-realization-model",
-        "rev": "759ed91eb1ea7524951cba99357828223c26b2e7",
         "type": "github"
       }
     },

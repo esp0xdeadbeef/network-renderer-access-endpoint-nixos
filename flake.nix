@@ -9,7 +9,7 @@
 
     network-labs.url = "github:esp0xdeadbeef/network-labs";
 
-    network-realization-model.url = "github:esp0xdeadbeef/network-realization-model/759ed91eb1ea7524951cba99357828223c26b2e7";
+    network-realization-model.url = "github:esp0xdeadbeef/network-realization-model";
     network-realization-model.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -105,7 +105,7 @@
               identity = "access-endpoint-renderer-boundary";
             };
             rootLockIdentity = "network-renderer-access-endpoint-flake-lock";
-            producerRevision = "network-realization-model-759ed91";
+            producerRevision = network-realization-model.rev;
           };
           accepted = renderer.canonical.validateInput { inherit bundle; };
           rawRejected =

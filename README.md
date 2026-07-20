@@ -18,6 +18,8 @@ must be explicit in the README, tests, and owning layer before it is accepted.
 | FS | FS-720 | OK |
 | FS | FS-725 | OK — s-router-test-clients Host Non-Participation |
 | FS | FS-983 | OK — Renderer Endpoint Fixture Data Boundary |
+| FS | FS-161 / FS-162 | Canonical realization authority and peer-renderer boundary |
+| FS | FS-168 / FS-169 | Renderer consumption and rendered-output coverage |
 | HDS | FS-720-HDS-030 | OK — Client Address Assignment Source |
 | SDS | FS-720-HDS-030-SDS-010 | OK — DHCP Address Assignment Source |
 | SMS | FS-230-HDS-010-SDS-010-SMS-040 | Construction OK; cold-stage live proof pending — protected IPv6 service endpoint materialization |
@@ -51,9 +53,9 @@ fixture records. Phase 2 (`buildContainersFromAssignment`) replaced the Phase 1
 implementation that read raw inventory.
 
 ### Fail-closed
-Missing CPM data must fail evaluation. Static endpoint fixtures throw on
+Missing canonical endpoint data must fail evaluation. Static endpoint fixtures throw on
 missing `gateway4`. Unsupported assignment modes throw with a diagnostic naming
-the endpoint and mode. A valid CPM output with zero endpoint assignments is a
+the endpoint and mode. A valid canonical bundle with zero endpoint assignments is a
 no-endpoint fixture profile: the renderer emits no endpoint containers and does
 not read raw inventory as a fallback.
 
@@ -61,11 +63,12 @@ not read raw inventory as a fallback.
 The renderer does not supply hardcoded defaults for endpoint addresses, bridge
 names, or assignment modes. Bridge names come from the `endpointAssignment`
 `bridge` field (defaulting to tenant name only when bridge is explicitly empty —
-the tenant name is a CPM-provided field, not a hardcoded string).
+the tenant name is a canonical field with upstream provenance, not a hardcoded
+string).
 
 ### No naming inference
 All endpoint classification (static vs DHCP, address family, bridge attachment)
-is driven by explicit CPM `endpointAssignment` record fields (`mode`, `static`,
+is driven by explicit canonical `endpointAssignment` record fields (`mode`, `static`,
 `dhcp`). No interface name pattern matching, role-name inference, or tenant-name
 parsing is used for policy derivation.
 
@@ -84,7 +87,7 @@ network-policy authority exercised by the fixture.
 
 ## What it does
 
-- Consumes CPM `endpointAssignment` records for static and DHCP endpoint fixtures.
+- Consumes canonical `endpointAssignment` records for static and DHCP endpoint fixtures.
 - Materializes NixOS containers with explicit addresses, gateways, DNS servers,
   and bridge attachments.
 - Creates L2 bridge networks and VLAN netdevs on the host (`s-router-test-clients`)
@@ -92,7 +95,7 @@ network-policy authority exercised by the fixture.
 - Supports both `dhcp` and `static`/`static-only` assignment modes.
 - Force-disables the endpoint-container default firewall without adding
   service-specific accepts, so live probes observe only modeled router policy.
-- For an explicit CPM `runtimeAddressAssignments` record, mounts only the
+- For an explicit canonical `runtimeAddressAssignments` record, mounts only the
   referenced `/run/secrets/...` source read-only into the selected endpoint and
   materializes its IPv6 `/128` after networking is online. The protected prefix
   is never evaluated by Nix or written to the store.
@@ -103,7 +106,8 @@ network-policy authority exercised by the fixture.
 Per FS-725 and FS-983:
 
 - Must not read `intent.nix`, `inventory.nix`, or `inventory-nixos.nix` directly
-  for endpoint assignment data — all data must come through CPM.
+  for endpoint assignment data — all network-semantic data must come through
+  the validated canonical bundle.
 - Must not provision DHCP server, DNS service, NAT, gateway behavior, endpoint
   forwarding, endpoint firewall policy, or endpoint bridge IP addresses on the
   `s-router-test-clients` host.
@@ -111,7 +115,7 @@ Per FS-725 and FS-983:
   router behavior, and must not replace it with tuple-specific fixture policy.
 - Must not walk tenant definitions, access-node assignments, address prefixes,
   or endpoint client lists from raw intent or inventory.
-- Must not fall back to direct inventory import when CPM output is missing
+- Must not fall back to raw CPM or direct inventory import when canonical data is missing
   required fields — must report the gap as a missing upstream contract.
 
 ## API
