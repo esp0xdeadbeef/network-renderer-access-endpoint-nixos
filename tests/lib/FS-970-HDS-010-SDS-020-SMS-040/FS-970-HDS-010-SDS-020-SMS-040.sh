@@ -3,7 +3,7 @@
 # GAMP-SCOPE: software-module-test
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="${SMS_TEST_REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 
 result="$(
   REPO_ROOT="${repo_root}" nix eval --impure --json --expr '

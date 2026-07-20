@@ -3,7 +3,7 @@
 # GAMP-SCOPE: access-endpoint renderer CPM-direct entry contract; not HAT/SAT evidence
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="${SMS_TEST_REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 labs_root="${NETWORK_LABS_ROOT:-${repo_root}/../network-labs}"
 fixture="${labs_root}/GAMP/SMT/FS-166-HDS-010-SDS-010-SMS-900/renderer-input/minimal-access-endpoint-cpm.nix"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/access-endpoint-cpm-entry.XXXXXX")"
