@@ -31,6 +31,23 @@ result="$({
           module
         ];
       };
+      conflictingHost = flake.inputs.nixpkgs.lib.nixosSystem {
+        system = builtins.currentSystem;
+        modules = [
+          ({ lib, ... }: {
+            options.sops.secrets = lib.mkOption {
+              type = lib.types.attrs;
+              default = {};
+            };
+          })
+          module
+          ({ lib, ... }: {
+            containers.fs230-nixos-service.config = {
+              networking.firewall.enable = lib.mkForce true;
+            };
+          })
+        ];
+      };
       runtimeUnit = "access-endpoint-runtime-ipv6-address-0";
       describe = name:
         let
@@ -39,6 +56,7 @@ result="$({
           hostUnit = host.config.systemd.services."container@${name}";
         in {
           bindMounts = container.bindMounts;
+          firewallEnabled = container.config.networking.firewall.enable;
           hasRuntimeUnit = builtins.hasAttr runtimeUnit services;
           execStart = if builtins.hasAttr runtimeUnit services then services.${runtimeUnit}.serviceConfig.ExecStart else null;
           hostAfter = hostUnit.after;
@@ -51,6 +69,11 @@ result="$({
         inherit (secret) key mode path;
         sopsFile = builtins.toString secret.sopsFile;
       };
+      conflictingFirewallOverrideAccepted = (builtins.tryEval (
+        builtins.deepSeq
+          conflictingHost.config.containers.fs230-nixos-service.config.networking.firewall.enable
+          true
+      )).success;
     }
   '
 } 2>"${tmp_dir}/eval.stderr")"
@@ -70,6 +93,7 @@ jq -e '
         mountPoint: "/run/secrets/fs230-lab-dmz-ipv6-prefix"
       }
     }
+    and .firewallEnabled == false
     and .hasRuntimeUnit == true
     and (.execStart | contains("runtime-protected-ipv6-address.py"))
     and (.execStart | contains("--source /run/secrets/fs230-lab-dmz-ipv6-prefix"))
@@ -86,6 +110,7 @@ jq -e '
   ))
   and ([.endpoints["fs230-nixos-public"], .endpoints["fs230-clab-public"]] | all(
     .bindMounts == {}
+    and .firewallEnabled == false
     and .hasRuntimeUnit == false
     and .execStart == null
     and (.hostAfter | index("sops-nix.service") == null)
@@ -98,6 +123,7 @@ jq -e '
     sopsFile: .protectedSource.sopsFile
   }
   and (.protectedSource.sopsFile | endswith("/GAMP/SMT/FS-230-HDS-010-SDS-010-SMS-040/secrets/sops-fs230.json"))
+  and .conflictingFirewallOverrideAccepted == false
 ' <<<"${result}" >/dev/null
 
 printf '%s\n' '2001:db8:230::/48' >"${tmp_dir}/prefix"
