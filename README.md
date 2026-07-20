@@ -1,7 +1,10 @@
 # network-renderer-access-endpoint-nixos
 
 `network-renderer-access-endpoint-nixos` materializes NixOS endpoint fixture
-containers from explicit CPM `endpointAssignment` contract records. It is an
+containers from one validated canonical bundle. Canonical
+`endpointAssignment` records remain the network authority; one optional
+normalized endpoint platform-binding bundle may supply bounded target
+mechanics. It is an
 **emission stage only** in the s-router GAMP pipeline.
 
 Migration, deviation, exception, transition, or temporary compatibility behavior
@@ -28,20 +31,21 @@ network-labs (intent.nix + inventory-nixos.nix)
   ↓
 network-compiler → network-forwarding-model
   ↓
-network-control-plane-model (CPM)
+network-control-plane-model (CPM) → network-realization-model → schema validation
   ↓
 **this renderer** (NixOS test-client containers)
 ```
 
-This renderer sits downstream of `network-control-plane-model` and upstream of
-NixOS host configuration. It consumes CPM `endpointAssignment` records and
+This renderer sits downstream of canonical schema validation and upstream of
+NixOS host configuration. It consumes canonical `endpointAssignment` records and
 emits NixOS container definitions for access endpoint test fixtures.
 
 ## Contract
 
-### CPM-only input
-The renderer consumes data exclusively through CPM output. It calls
-`cpm.compileAndBuildFromPaths` to build the CPM model, then reads
+### Canonical input
+The controlled renderer API consumes data exclusively through the validated
+canonical bundle. The retained path-building regression helper calls
+`cpm.compileAndBuildFromPaths` to build the historical CPM model, then reads
 `control_plane_model.data.<enterprise>.<site>.endpointAssignment` for endpoint
 fixture records. Phase 2 (`buildContainersFromAssignment`) replaced the Phase 1
 implementation that read raw inventory.
@@ -116,20 +120,18 @@ The flake exports:
 
 | Export | Description |
 |--------|-------------|
-| `libBySystem.<system>.renderer.hostModule` | Standard renderer interface: accepts explicit `cpm` or `controlPlane` input plus renderer inventory/host parameters |
-| `libBySystem.<system>.renderer.hostModuleFromPaths` | Compatibility path builder: accepts explicit `intentPath`, `inventoryPath`, `hostName`, `labSource`, `mode`, `siteName`, then builds CPM before rendering |
+| `libBySystem.<system>.renderer.canonical.hostModule` | Controlled renderer interface: accepts one validated `bundle`, optional `platformBinding`, and host parameters |
+| `libBySystem.<system>.renderer.canonical.validateInput` | Common bundle, scope, target, and binding validation boundary |
+| `libBySystem.<system>.renderer.hostModule` | Superseded direct-CPM regression interface; not current FS-166 evidence |
+| `libBySystem.<system>.renderer.hostModuleFromPaths` | Superseded compatibility path builder; not current FS-166 evidence |
 
 Example usage:
 
 ```nix
-inputs.network-renderer-access-endpoint-nixos.libBySystem.${system}.renderer.hostModule {
+inputs.network-renderer-access-endpoint-nixos.libBySystem.${system}.renderer.canonical.hostModule {
+  inherit bundle platformBinding;
   hostName = "s-router-test-clients";
-  labSource = "active-lab";
-  cpm = cpmBuilt;
-  controlPlane = cpmBuilt;
-  inventory = ./inventory-nixos.nix;
   mode = "test";
-  siteName = "site-a";
 }
 ```
 
