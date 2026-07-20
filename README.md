@@ -72,6 +72,12 @@ firewall policy on endpoint bridges. Bridge networks are pure L2 plumbing:
 service blocks endpoint bridge subnets from reaching the host management VLAN
 — this is a host-isolation measure, not endpoint policy invention.
 
+Endpoint containers are also policy-neutral. The renderer force-disables their
+NixOS default firewall so that an endpoint-local default-deny verdict cannot
+mask an explicitly modeled router-path result. It does not derive or install a
+tuple-specific endpoint allow; the upstream router contract remains the only
+network-policy authority exercised by the fixture.
+
 ## What it does
 
 - Consumes CPM `endpointAssignment` records for static and DHCP endpoint fixtures.
@@ -80,6 +86,8 @@ service blocks endpoint bridge subnets from reaching the host management VLAN
 - Creates L2 bridge networks and VLAN netdevs on the host (`s-router-test-clients`)
   for endpoint bridge attachment.
 - Supports both `dhcp` and `static`/`static-only` assignment modes.
+- Force-disables the endpoint-container default firewall without adding
+  service-specific accepts, so live probes observe only modeled router policy.
 - For an explicit CPM `runtimeAddressAssignments` record, mounts only the
   referenced `/run/secrets/...` source read-only into the selected endpoint and
   materializes its IPv6 `/128` after networking is online. The protected prefix
@@ -95,6 +103,8 @@ Per FS-725 and FS-983:
 - Must not provision DHCP server, DNS service, NAT, gateway behavior, endpoint
   forwarding, endpoint firewall policy, or endpoint bridge IP addresses on the
   `s-router-test-clients` host.
+- Must not inherit a default endpoint-container firewall that can mask modeled
+  router behavior, and must not replace it with tuple-specific fixture policy.
 - Must not walk tenant definitions, access-node assignments, address prefixes,
   or endpoint client lists from raw intent or inventory.
 - Must not fall back to direct inventory import when CPM output is missing

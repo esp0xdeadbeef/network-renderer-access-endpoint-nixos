@@ -35,9 +35,13 @@ let
 
   mkBaseEndpoint =
     hostname:
-    { ... }:
+    { lib, ... }:
     {
       networking.hostName = hostname;
+      # FS-230-HDS-010-SDS-010-SMS-040: isolated endpoints observe router
+      # policy; they must not add a second default-deny or tuple-specific
+      # firewall authority after the modeled path has delivered a packet.
+      networking.firewall.enable = lib.mkForce false;
       system.stateVersion = "25.11";
       networking.useNetworkd = true;
       systemd.network.enable = true;
@@ -109,41 +113,39 @@ let
     { lib, ... }@moduleArgs:
     let
       runtimeAddressServices = builtins.listToAttrs (
-        lib.imap0
-          (index: assignment: {
-            name = "access-endpoint-runtime-ipv6-address-${toString index}";
-            value = {
-              description = "Materialize protected runtime IPv6 endpoint address";
-              wantedBy = [ "multi-user.target" ];
-              after = [ "network-online.target" ];
-              wants = [ "network-online.target" ];
-              serviceConfig = {
-                Type = "oneshot";
-                RemainAfterExit = true;
-                ExecStart = lib.escapeShellArgs [
-                  "${pkgs.python3}/bin/python3"
-                  (toString ./runtime-protected-ipv6-address.py)
-                  "--source"
-                  assignment.sourceFile
-                  "--delegated-prefix-length"
-                  (toString assignment.delegatedPrefixLength)
-                  "--tenant-prefix-length"
-                  (toString assignment.perTenantPrefixLength)
-                  "--slot"
-                  (toString assignment.slot)
-                  "--interface-identifier"
-                  assignment.interfaceIdentifier
-                  "--target-prefix-length"
-                  (toString assignment.prefixLength)
-                  "--assign-interface"
-                  assignment.interfaceName
-                  "--ip-command"
-                  "${pkgs.iproute2}/bin/ip"
-                ];
-              };
+        lib.imap0 (index: assignment: {
+          name = "access-endpoint-runtime-ipv6-address-${toString index}";
+          value = {
+            description = "Materialize protected runtime IPv6 endpoint address";
+            wantedBy = [ "multi-user.target" ];
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart = lib.escapeShellArgs [
+                "${pkgs.python3}/bin/python3"
+                (toString ./runtime-protected-ipv6-address.py)
+                "--source"
+                assignment.sourceFile
+                "--delegated-prefix-length"
+                (toString assignment.delegatedPrefixLength)
+                "--tenant-prefix-length"
+                (toString assignment.perTenantPrefixLength)
+                "--slot"
+                (toString assignment.slot)
+                "--interface-identifier"
+                assignment.interfaceIdentifier
+                "--target-prefix-length"
+                (toString assignment.prefixLength)
+                "--assign-interface"
+                assignment.interfaceName
+                "--ip-command"
+                "${pkgs.iproute2}/bin/ip"
+              ];
             };
-          })
-          runtimeAddressAssignments
+          };
+        }) runtimeAddressAssignments
       );
     in
     lib.mkMerge (
