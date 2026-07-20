@@ -3,7 +3,7 @@
 # GAMP-SCOPE: software-integration-test
 # FS-982-SMS-110-RUNTIME: scoped-artifact
 # FS-982-SMS-110-ARTIFACT: access-endpoint renderer direct CPM contract artifact
-# FS-982-SMS-110-EVIDENCE: tests/FS-310-HDS-010-SDS-010-SMS-110-layer-entry-cpm-input.sh
+# FS-982-SMS-110-EVIDENCE: tests/FS-310-HDS-010-SDS-010-SMS-110.sh
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,7 +13,7 @@ fail() {
   exit 1
 }
 
-evidence="tests/FS-310-HDS-010-SDS-010-SMS-110-layer-entry-cpm-input.sh"
+evidence="tests/FS-310-HDS-010-SDS-010-SMS-110.sh"
 output="$(NETWORK_REPO_DIRECT_TEST_OK=1 bash "${repo_root}/${evidence}" 2>&1)" || {
   printf '%s\n' "${output}" >&2
   fail "${evidence} failed"

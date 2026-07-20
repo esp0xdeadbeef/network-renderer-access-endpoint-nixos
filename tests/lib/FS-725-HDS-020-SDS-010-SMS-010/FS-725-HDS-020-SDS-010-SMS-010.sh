@@ -19,7 +19,7 @@
 set -euo pipefail
 
 TEST_NAME="FS-725-HDS-020-SDS-010-SMS-010"
-RENDERER_FLAKE="$(cd "$(dirname "$0")/.." && pwd)"
+RENDERER_FLAKE="${SMS_TEST_REPO_ROOT:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRATCH="$(mktemp -d /tmp/test-${TEST_NAME}-XXXXXX)"
 trap 'rm -rf "$SCRATCH"' EXIT

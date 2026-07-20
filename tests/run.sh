@@ -20,6 +20,4 @@ for test in FS-*-HDS-*-SDS-*-SMS-*.sh; do
   fi
 done
 
-bash ./run-fs982-sms110.sh
-
 echo "All tests passed."
