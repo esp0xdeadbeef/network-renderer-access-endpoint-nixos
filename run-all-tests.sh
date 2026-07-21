@@ -38,7 +38,8 @@ fi
 
 # Auto-discover test files
 mapfile -d '' tests < <(
-  find "${repo_root}/tests" -maxdepth 1 -type f -name 'FS-*-HDS-*-SDS-*-SMS-*.sh' -print0 | sort -z
+  find "${repo_root}/tests" -maxdepth 1 \( -type f -o -type l \) \
+    -name 'FS-*-HDS-*-SDS-*-SMS-*.sh' -print0 | sort -z
 )
 
 if [[ "${#tests[@]}" -eq 0 ]]; then
