@@ -239,7 +239,7 @@ let
         if assignment ? mode then
           assignment.mode
         else
-          throw "FS-310-HDS-010-SDS-010-SMS-110: endpointAssignment.${name}.mode is missing; FS-720-HDS-030-SDS-010-SMS-041: MISSING_CPM_CONTRACT_FIELD MODE_INFERENCE_REJECTED: endpoint endpointAssignment.${name}.mode is missing; renderer refuses inferred assignment mode";
+          throw "FS-310-HDS-030-SDS-010-SMS-110: endpointAssignment.${name}.mode is missing; FS-720-HDS-030-SDS-010-SMS-041: MISSING_CPM_CONTRACT_FIELD MODE_INFERENCE_REJECTED: endpoint endpointAssignment.${name}.mode is missing; renderer refuses inferred assignment mode";
       hostBridge = endpointBridge name assignment;
       hostname = assignment.name or name;
       static = assignment.static or { };
@@ -254,15 +254,15 @@ let
         else
           throw (
             if attr == "gateway4" then
-              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway4; static.gateway4 missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.gateway4 missing; renderer refuses hardcoded gateway default"
+              "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway4; static.gateway4 missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.gateway4 missing; renderer refuses hardcoded gateway default"
             else if attr == "gateway6" then
-              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway6; static.gateway6 missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.gateway6 missing; renderer refuses hardcoded gateway default"
+              "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_STATIC_ADDRESS_FIELD: static endpoint endpointAssignment.${name} no gateway6; static.gateway6 missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.gateway6 missing; renderer refuses hardcoded gateway default"
             else if attr == "address" then
-              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.address missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.address missing; renderer refuses hardcoded address default"
+              "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.address missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.address missing; renderer refuses hardcoded address default"
             else if attr == "prefixLength" then
-              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.prefixLength missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.prefixLength missing; renderer refuses hardcoded prefix-length default"
+              "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.prefixLength missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.prefixLength missing; renderer refuses hardcoded prefix-length default"
             else
-              "FS-310-HDS-010-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.${attr} missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.${attr} missing; renderer refuses hardcoded static-field default"
+              "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.${attr} missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.${attr} missing; renderer refuses hardcoded static-field default"
           );
       staticModule = clientBuilders.mkStaticEndpoint {
         inherit hostname;
@@ -306,7 +306,7 @@ let
     else if mode == "static" || mode == "static-only" then
       mkContainer staticModule
     else
-      throw "FS-310-HDS-010-SDS-010-SMS-110: endpointAssignment.${name} unsupported mode '${mode}'";
+      throw "FS-310-HDS-030-SDS-010-SMS-110: endpointAssignment.${name} unsupported mode '${mode}'";
 
   buildContainersFromAssignment = endpointAssignments:
     builtins.mapAttrs buildEndpointContainer endpointAssignments;
@@ -587,7 +587,7 @@ let
         if builtins.hasAttr field bridgeNetwork && bridgeNetwork.${field} != "" then
           bridgeNetwork.${field}
         else if field == "parent" then
-          throw "FS-310-HDS-010-SDS-010-SMS-110 FS-720-HDS-010-SDS-010-SMS-050: bridgeNetworks.${bridgeName}.parent is missing"
+          throw "FS-310-HDS-030-SDS-010-SMS-110 FS-720-HDS-010-SDS-010-SMS-050: bridgeNetworks.${bridgeName}.parent is missing"
         else if field == "vlan" then
           throw "FS-720-HDS-010-SDS-010-SMS-050: bridgeNetworks.${bridgeName}.vlan is missing"
         else
@@ -953,17 +953,17 @@ let
 
   # ----- hostModuleFromPaths: compatibility path builder -----
   hostModuleFromPaths =
-    { # FS-310-HDS-010-SDS-010-SMS-110: caller must supply hostName for non-default harness targets.
+    { # FS-310-HDS-030-SDS-010-SMS-110: caller must supply hostName for non-default harness targets.
       hostName ? "s-router-test-clients"
-    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply labSource for non-default lab sources.
+    , # FS-310-HDS-030-SDS-010-SMS-110: caller must supply labSource for non-default lab sources.
       labSource ? "active-lab"
     , intentPath ? null
     , inventoryPath ? null
     , clientsPath ? null
     , routingSopsPath ? null
-    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply mode for non-test materialization.
+    , # FS-310-HDS-030-SDS-010-SMS-110: caller must supply mode for non-test materialization.
       mode ? "test"
-    , # FS-310-HDS-010-SDS-010-SMS-110: caller must supply siteName for non-default site targets.
+    , # FS-310-HDS-030-SDS-010-SMS-110: caller must supply siteName for non-default site targets.
       siteName ? "site-a"
     , ...
     }:
@@ -1032,7 +1032,7 @@ let
       hostModuleFromCpmOutput {
         cpmOutput = explicitCpm;
         hostName = rendererInput.hostName or "s-router-test-clients";
-        # FS-310-HDS-010-SDS-010-SMS-110: caller must supply mode for non-test materialization.
+        # FS-310-HDS-030-SDS-010-SMS-110: caller must supply mode for non-test materialization.
         mode = rendererInput.mode or "test";
         sopsModule =
           let
