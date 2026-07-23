@@ -662,7 +662,13 @@ let
           map
             (parentIf:
               let
-                vlanChildren = lib.unique (vlanChildrenForParent parentIf);
+                vlanChildrenRaw = vlanChildrenForParent parentIf;
+                _vlanNoCollision =
+                  if builtins.length vlanChildrenRaw == builtins.length (lib.unique vlanChildrenRaw) then
+                    true
+                  else
+                    throw "FS-040-HDS-010-SDS-010-SMS-020: VLAN identity collision on parent ${parentIf} at host ${hostName}: ${builtins.concatStringsSep "," vlanChildrenRaw}";
+                vlanChildren = lib.unique vlanChildrenRaw;
                 directBridgeNames = lib.unique (directBridgeNamesForParent parentIf);
                 _singleDirectBridge =
                   if builtins.length directBridgeNames <= 1 then
@@ -670,7 +676,7 @@ let
                   else
                     throw "FS-040-HDS-010-SDS-010-SMS-020: multiple non-vlan host attachments on parent ${parentIf} at host ${hostName}: ${builtins.concatStringsSep "," directBridgeNames}";
               in
-              builtins.seq _singleDirectBridge {
+              builtins.seq _vlanNoCollision (builtins.seq _singleDirectBridge {
                 name = "20-${parentIf}";
                 value = {
                   linkConfig = {
@@ -689,7 +695,7 @@ let
                     Bridge = builtins.head directBridgeNames;
                   };
                 };
-              })
+              }))
             parentIfNames
         );
 
