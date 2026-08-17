@@ -446,6 +446,19 @@ let
         builtins.filter
           (bridge: builtins.isString bridge && bridge != "")
           (map (uplinkName: hostUplinks.${uplinkName}.bridge or null) hostUplinkNames);
+      managementUplinkBridgeNames =
+        builtins.filter
+          (bridge: builtins.isString bridge && bridge != "")
+          (map
+            (uplinkName:
+              let uplink = hostUplinks.${uplinkName};
+              in if (uplink.role or null) == "management" || (uplink.management or false) == true || uplinkName == "management" then
+                uplink.bridge or null
+              else
+                null)
+            hostUplinkNames);
+      managementBridgeNames =
+        if managementUplinkBridgeNames != [ ] then managementUplinkBridgeNames else [ "mgmt" ];
       endpointAssignmentNames = sortedAttrNames endpointAssignments;
       runtimeAddressAssignmentNames =
         builtins.filter
@@ -469,13 +482,13 @@ let
       managementAssignmentNames =
         builtins.filter
           (name:
-            endpointBridge name endpointAssignments.${name} == "mgmt"
+            builtins.elem (endpointBridge name endpointAssignments.${name}) managementBridgeNames
             && isManagementAssignment endpointAssignments.${name})
           endpointAssignmentNames;
       mgmtTenantAssignmentNames =
         builtins.filter
           (name:
-            endpointBridge name endpointAssignments.${name} == "mgmt"
+            builtins.elem (endpointBridge name endpointAssignments.${name}) managementBridgeNames
             && !(isManagementAssignment endpointAssignments.${name}))
           endpointAssignmentNames;
       _managementBridgeContract =
