@@ -900,10 +900,6 @@ let
 
       containers = clientContainers;
 
-      users.users.root.openssh.authorizedKeys.keys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAqEmMbztRhj2zE1dXf5Z+Ow7mXXXE6sNAG4/hrIOrmD deadbeef@codex-jail"
-      ];
-
       systemd.services = runtimeContainerDependencies // {
         access-endpoint-renderer-dummy.enable = lib.mkForce false;
 
