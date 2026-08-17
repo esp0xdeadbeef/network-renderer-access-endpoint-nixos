@@ -870,7 +870,7 @@ let
       # decrypting, copying, or inferring protected values.
       imports = lib.optional (sopsModule != null) sopsModule;
 
-      system.stateVersion = lib.mkForce "25.11";
+      system.stateVersion = lib.mkOverride 900 "25.11";
 
       environment.systemPackages = with pkgs; [
         bind
