@@ -233,7 +233,7 @@ let
     else
       lib.imap0 normalize raw;
 
-  buildEndpointContainer = extraModules: name: assignment:
+  buildEndpointContainer = name: assignment:
     let
       mode =
         if assignment ? mode then
@@ -265,7 +265,7 @@ let
               "FS-310-HDS-030-SDS-010-SMS-110: MISSING_CPM_FIXTURE_FIELD: static endpoint endpointAssignment.${name}.static.${attr} missing; FS-720-HDS-030-SDS-010-SMS-041: HARDCODED_DEFAULT_REJECTED MISSING_CPM_CONTRACT_FIELD: endpoint endpointAssignment.${name}.static.${attr} missing; renderer refuses hardcoded static-field default"
           );
       staticModule = clientBuilders.mkStaticEndpoint {
-        inherit hostname extraModules;
+        inherit hostname;
         inherit runtimeAddressAssignments;
         addr4 = "${requireStatic "address"}/${toString (requireStatic "prefixLength")}";
         addr6 = "${requireStatic "address6"}/${toString (requireStatic "prefixLength6")}";
@@ -277,7 +277,7 @@ let
         ];
       };
       dhcpModule = clientBuilders.mkDhcpEndpoint {
-        inherit hostname dhcp4 dhcp6 extraModules;
+        inherit hostname dhcp4 dhcp6;
       };
       runtimeSourceMounts = builtins.listToAttrs (
         map
@@ -308,8 +308,8 @@ let
     else
       throw "FS-310-HDS-030-SDS-010-SMS-110: endpointAssignment.${name} unsupported mode '${mode}'";
 
-  buildContainersFromAssignment = extraModules: endpointAssignments:
-    builtins.mapAttrs (buildEndpointContainer extraModules) endpointAssignments;
+  buildContainersFromAssignment = endpointAssignments:
+    builtins.mapAttrs buildEndpointContainer endpointAssignments;
 
   buildProvenance =
     { cpmOutput
@@ -389,11 +389,6 @@ let
     , hostName ? "s-router-test-clients"
     , mode ? "test"
     , sopsModule ? null
-      # Modules merged into every endpoint container. Threaded from the host
-      # profile so it can attach service assertions to fixture clients without
-      # the renderer learning traffic-policy meaning (FS-983: the renderer owns
-      # endpoint addressing, not reachability policy).
-    , extraModules ? [ ]
     ,
     }:
 
@@ -536,7 +531,7 @@ let
                 if cpmOutput ? containers then
                   cpmOutput.containers
                 else
-                  buildContainersFromAssignment extraModules endpointAssignments
+                  buildContainersFromAssignment endpointAssignments
                 )
               )
             )
