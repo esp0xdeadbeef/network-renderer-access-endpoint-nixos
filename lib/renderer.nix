@@ -985,6 +985,8 @@ let
       mode ? "test"
     , # FS-310-HDS-030-SDS-010-SMS-110: caller must supply siteName for non-default site targets.
       siteName ? "site-a"
+      # Modules merged into every endpoint container by the client builders.
+    , extraModules ? [ ]
     , ...
     }:
 
@@ -1027,7 +1029,7 @@ let
           );
     in
     hostModuleFromCpmOutput {
-      inherit cpmOutput hostName mode;
+      inherit cpmOutput hostName mode extraModules;
       sopsModule =
         if routingSopsPath == null then
           null
