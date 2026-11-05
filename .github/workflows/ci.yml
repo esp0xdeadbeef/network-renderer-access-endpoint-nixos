@@ -87,6 +87,22 @@ jobs:
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
 
+          # Suites default these to a developer home directory; point them at the
+          # sibling checkouts instead.
+          {
+            printf 'NETWORK_LABS_PATH=%s\n'        "${workspace}/network-labs"
+            printf 'NETWORK_LABS_ROOT=%s\n'        "${workspace}/network-labs"
+            printf 'NETWORK_LABS_REPO=%s\n'        "${workspace}/network-labs"
+            printf 'NETWORK_CPM_PATH=%s\n'         "${workspace}/network-control-plane-model"
+            printf 'NETWORK_NFM_PATH=%s\n'         "${workspace}/network-forwarding-model"
+            printf 'NETWORK_COMPILER_PATH=%s\n'    "${workspace}/network-compiler"
+            printf 'NETWORK_RENDERER_NIXOS_PATH=%s\n' "${workspace}/network-renderer-nixos"
+            printf 'NETWORK_RENDERER_CLAB_PATH=%s\n'  "${workspace}/network-renderer-containerlab-linux-backend"
+            printf 'NETWORK_RENDERER_WIREGUARD_PATH=%s\n' "${workspace}/network-renderer-wireguard"
+            printf 'NETWORK_RENDERER_NEBULA_PATH=%s\n'    "${workspace}/network-renderer-nebula"
+            printf 'NETWORK_RENDERER_ACCESS_ENDPOINT_NIXOS_PATH=%s\n' "${workspace}/network-renderer-access-endpoint-nixos"
+          } >> "$GITHUB_ENV"
+
       - name: "Run repository test suite"
         env:
           NETWORK_REPO_DIRECT_TEST_OK: "1"
