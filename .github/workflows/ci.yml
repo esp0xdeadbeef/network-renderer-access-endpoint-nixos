@@ -48,6 +48,45 @@ jobs:
             nixpkgs#yq
           printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
 
+      # The suites resolve sibling repositories as ../network-* (the developer
+      # layout). Check them out at the revisions this repository pins so CI
+      # matches a local checkout instead of missing them.
+      - name: "Check out sibling repositories"
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(dirname "$GITHUB_WORKSPACE")"
+
+          # flake.lock is gitignored in this repository, so generate it first to
+          # learn the pinned revisions of the sibling inputs.
+          if [ ! -f flake.lock ]; then
+            nix flake lock
+          fi
+
+          nix eval --json --impure --expr '
+            let
+              l = builtins.fromJSON (builtins.readFile ./flake.lock);
+              root = l.nodes.root.inputs or { };
+              describe = nodeName:
+                let n = l.nodes.${nodeName}.locked or { };
+                in { type = n.type or ""; owner = n.owner or ""; repo = n.repo or ""; rev = n.rev or ""; };
+            in builtins.mapAttrs (name: nodeName: describe nodeName) root
+          ' > "$RUNNER_TEMP/inputs.json"
+
+          jq -r 'to_entries[] | select(.value.type == "github" and .value.owner == "esp0xdeadbeef")
+                 | [.key, .value.repo, .value.rev] | @tsv' "$RUNNER_TEMP/inputs.json" \
+            > "$RUNNER_TEMP/siblings.tsv"
+
+          while IFS=$'\t' read -r name repo rev; do
+            [ -e "${workspace}/${name}" ] && continue
+            echo "::group::${name} @ ${rev:0:10}"
+            git init --quiet "${workspace}/${name}"
+            git -C "${workspace}/${name}" remote add origin "https://github.com/esp0xdeadbeef/${repo}.git"
+            git -C "${workspace}/${name}" fetch --quiet --depth 1 origin "${rev}"
+            git -C "${workspace}/${name}" checkout --quiet FETCH_HEAD
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/siblings.tsv"
+
       - name: "Run repository test suite"
         env:
           NETWORK_REPO_DIRECT_TEST_OK: "1"
