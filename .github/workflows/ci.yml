@@ -1,0 +1,43 @@
+name: "CI"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    name: "nix flake check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      # Evaluate-only gate: the repository test suite below builds and runs the real artifacts, so avoid duplicating the build here.
+      - name: "Check flake outputs"
+        run: nix flake check --no-build -L --show-trace
+
+  tests:
+    name: "test suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: "Run repository test suite"
+        env:
+          NETWORK_REPO_DIRECT_TEST_OK: "1"
+        run: ./run-all-tests.sh
