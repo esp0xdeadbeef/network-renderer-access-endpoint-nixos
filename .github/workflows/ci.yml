@@ -44,6 +44,7 @@ jobs:
           set -euo pipefail
           nix profile install --accept-flake-config \
             nixpkgs#ripgrep \
+            nixpkgs#jq \
             nixpkgs#sops \
             nixpkgs#yq
           printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
