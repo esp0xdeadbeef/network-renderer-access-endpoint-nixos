@@ -15,12 +15,18 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    env:
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     timeout-minutes: 120
     steps:
+      # Test/nix scratch must not depend on the image's /tmp. The runner
+      # exports RUNNER_TEMP for exactly this purpose; publish it to the
+      # remaining steps (job-level env cannot read the runner context).
+      - name: "Use the runner temp dir for scratch"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in TMPDIR TMP TEMP; do
+            printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          done
       - uses: actions/checkout@v6
         with:
           ref: main
