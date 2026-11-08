@@ -18,6 +18,10 @@ jobs:
   flake-check:
     name: "nix flake check"
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
@@ -31,6 +35,10 @@ jobs:
   tests:
     name: "test suite"
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v6

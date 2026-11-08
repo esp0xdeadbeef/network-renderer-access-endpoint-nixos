@@ -15,6 +15,10 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6

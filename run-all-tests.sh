@@ -14,7 +14,7 @@
 # No hardcoded test list.
 
 set -euo pipefail
-exec > >(tee "/tmp/network-renderer-access-endpoint-nixos-tests.out")
+exec > >(tee "${TMPDIR:-/var/tmp}/network-renderer-access-endpoint-nixos-tests.out")
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
