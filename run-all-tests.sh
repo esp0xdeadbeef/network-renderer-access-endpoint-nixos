@@ -9,7 +9,8 @@
 #   TEST_TIMEOUT_SECONDS    Per-test timeout (default: 1800)
 #   NETWORK_REPO_DIRECT_TEST_OK  Set to 1 to skip the guard warning
 #
-# Auto-discovers test-*.sh in tests/ and runs them asynchronously.
+# Auto-discovers test entrypoints through the shared
+# scripts/lib/discover-tests.sh contract and runs them asynchronously.
 # Reports PASS/FAIL summary at the end.
 # No hardcoded test list.
 
@@ -37,13 +38,17 @@ if ! [[ "${test_timeout_seconds}" =~ ^[0-9]+$ ]] || [[ "${test_timeout_seconds}"
 fi
 
 # Auto-discover test files
-mapfile -d '' tests < <(
-  find "${repo_root}/tests" -maxdepth 1 \( -type f -o -type l \) \
-    -name 'FS-*-HDS-*-SDS-*-SMS-*.sh' -print0 | sort -z
-)
+# shellcheck source=scripts/lib/discover-tests.sh
+source "${repo_root}/scripts/lib/discover-tests.sh"
+mapfile -t test_names < <(discover_tests "${repo_root}")
+
+tests=()
+for test_name in "${test_names[@]}"; do
+  tests+=("${repo_root}/tests/${test_name}")
+done
 
 if [[ "${#tests[@]}" -eq 0 ]]; then
-  echo "error: no FS-*-HDS-*-SDS-*-SMS-*.sh files found in ${repo_root}/tests" >&2
+  echo "error: no test entrypoints found in ${repo_root}/tests" >&2
   exit 2
 fi
 
@@ -88,7 +93,7 @@ for test_path in "${tests[@]}"; do
   log_file="${tmp_dir}/${test_name}.log"
   printf 'START %s\n' "${test_name}"
 
-  timeout "${test_timeout_seconds}" bash "${test_path}" >"${log_file}" 2>&1 &
+  timeout "${test_timeout_seconds}" "$(discover_test_runner "${test_path}")" "${test_path}" >"${log_file}" 2>&1 &
   pid=$!
   pid_to_name["${pid}"]="${test_name}"
   pid_to_log["${pid}"]="${log_file}"
