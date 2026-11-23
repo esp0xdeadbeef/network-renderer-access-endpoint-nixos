@@ -79,6 +79,11 @@
               forwarded
               // {
                 cpm = validated.controlPlaneEnvelope;
+                # The bundle's canonical collections. `canonicalSites[].facts` is
+                # the complete site record, which is where this renderer's
+                # endpointAssignment comes from; handing it through is what lets
+                # the renderer stop walking the plain CPM for site data.
+                canonicalCollections = validated.canonical or { };
                 canonicalBundleIdentity = validated.bundleIdentity;
                 canonicalBindingIdentity = validated.bindingIdentity;
               }

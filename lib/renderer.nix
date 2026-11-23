@@ -149,10 +149,32 @@ let
     else
       "unknown";
 
+  # Site records from the validated bundle's canonical collections, not from the
+  # plain control-plane model. RR_RAW_CPM_INPUT forbids reading the CPM: a
+  # renderer that does cannot tell whether a canonical field is present or false.
+  #
+  # `canonicalSites.sites[].facts` carries the complete site record, including the
+  # `endpointAssignment` this renderer needs -- verified against a real bundle, so
+  # nothing here is re-derived. The CPM walk below remains only as the fallback for
+  # callers that hand the legacy shape; migrating those callers is what removes it.
+  canonicalSiteFacts = cpmOutput:
+    let
+      sites = (cpmOutput.canonicalCollections or { }).canonicalSites or { };
+      entries = sites.sites or [ ];
+    in
+    if builtins.isList entries then
+      map (e: e.facts or { }) entries
+    else
+      [ ];
+
   cpmSiteData = cpmOutput:
-    builtins.concatLists (
-      map builtins.attrValues (builtins.attrValues (cpmOutput.control_plane_model.data or { }))
-    );
+    let canonical = canonicalSiteFacts cpmOutput; in
+    if canonical != [ ] then
+      canonical
+    else
+      builtins.concatLists (
+        map builtins.attrValues (builtins.attrValues (cpmOutput.control_plane_model.data or { }))
+      );
 
   endpointAssignmentsFromCpm = cpmOutput:
     if cpmOutput ? endpointAssignment then
