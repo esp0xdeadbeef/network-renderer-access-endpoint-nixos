@@ -78,7 +78,17 @@
             legacyRenderer.hostModule (
               forwarded
               // {
-                cpm = validated.controlPlaneEnvelope;
+                # No `cpm`: the renderer takes its network semantics from the
+                # validated bundle's canonical collections and its deployment
+                # facts from the bundle's platform-binding categories, both passed
+                # below. Handing over the producer's unvalidated envelope was passing the plain
+                # control-plane model, which RR_RAW_CPM_INPUT forbids.
+                #
+                # `deploymentHosts` stays: it is a sibling of the control-plane
+                # model on the artifact (the producer emits it there), not a field
+                # of the CPM, and it is the carrier the renderer reads host
+                # deployment facts from.
+                deploymentHosts = validated.semanticModel.deploymentHosts or { };
                 # The bundle's canonical collections. `canonicalSites[].facts` is
                 # the complete site record, which is where this renderer's
                 # endpointAssignment comes from; handing it through is what lets
@@ -113,12 +123,14 @@
             producerRevision = network-realization-model.rev;
           };
           accepted = renderer.canonical.validateInput { inherit bundle; };
+          # A raw control-plane-model artifact, used only as input to prove the
+          # canonical boundary rejects it. The fixture lives under tests/ because
+          # tests/test-raw-cpm-consumption.sh scans implementation source for such
+          # reads and excludes tests/ for exactly this case.
           rawRejected =
             !(builtins.tryEval (
               builtins.deepSeq (renderer.canonical.validateInput {
-                bundle = {
-                  control_plane_model = { };
-                };
+                bundle = import ./tests/lib/boundary/raw-cpm-fixture.nix;
               }) true
             )).success;
         in

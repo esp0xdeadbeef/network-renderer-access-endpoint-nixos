@@ -31,18 +31,27 @@ let
   system = builtins.currentSystem;
   renderer = flake.libBySystem.\${system}.renderer;
   api = flake.libBySystem.\${system}.renderer;
+  # Migrated off the plain CPM (RR_RAW_CPM_INPUT): host deployment facts come from
+  # `deploymentHosts`, a sibling of control_plane_model on the artifact, and site
+  # records -- including endpointAssignment -- from canonicalSites[].facts. Both
+  # carriers already exist in the producer; nothing here invents one.
   cpmFixture = {
-    control_plane_model = {
-      deployment.hosts.s-router-test-clients = {
-        bridgeNetworks.client = { mode = "vlan"; parent = "eth0"; vlan = 302; };
-        uplinks.management = {
-          bridge = "vlan2";
-          ipv4 = { dhcp = true; enable = true; method = "dhcp"; };
-          ipv6 = { acceptRA = false; dhcp = false; enable = false; method = "none"; };
-          mode = "vlan"; parent = "eth0"; role = "management"; vlan = 2;
-        };
+    deploymentHosts.s-router-test-clients = {
+      bridgeNetworks.client = { mode = "vlan"; parent = "eth0"; vlan = 302; };
+      uplinks.management = {
+        bridge = "vlan2";
+        ipv4 = { dhcp = true; enable = true; method = "dhcp"; };
+        ipv6 = { acceptRA = false; dhcp = false; enable = false; method = "none"; };
+        mode = "vlan"; parent = "eth0"; role = "management"; vlan = 2;
       };
-      data."mini-smt"."${trace_id}".endpointAssignment.prod-like-vlan4-client01 = {
+    };
+  };
+  canonicalCollections = {
+    canonicalSites.sites = [
+      {
+        enterprise = "mini-smt";
+        site = "${trace_id}";
+        facts.endpointAssignment.prod-like-vlan4-client01 = {
         bridge = "client";
         family = "dual";
         mode = "static";
@@ -56,12 +65,14 @@ let
           prefixLength6 = 64;
           dnsServers = [ "10.38.120.1" ];
         };
-      };
-    };
+        };
+      }
+    ];
   };
   moduleFn = api.hostModule {
     hostName = "s-router-test-clients";
     cpm = cpmFixture;
+    inherit canonicalCollections;
     mode = "test";
   };
   result = moduleFn { config = {}; };

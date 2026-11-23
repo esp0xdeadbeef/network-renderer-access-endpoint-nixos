@@ -801,6 +801,9 @@ let
   moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
     cpm = cpmFixture;
+    # The renderer reads site records from the validated bundle's canonical
+    # collections; this profile has no endpoints, so the site list is empty.
+    canonicalCollections = { canonicalSites = { sites = [ ]; }; };
     mode = "test";
   };
   evalResult = builtins.tryEval (

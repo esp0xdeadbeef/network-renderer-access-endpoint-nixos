@@ -26,9 +26,13 @@ let
   nixpkgsLib = flake.inputs.nixpkgs.lib;
   system = builtins.currentSystem;
   renderer = flake.libBySystem.x86_64-linux.renderer;
+  # Migrated off the plain CPM (RR_RAW_CPM_INPUT). The producer emits host
+  # deployment facts as `deploymentHosts`, a SIBLING of control_plane_model on the
+  # artifact (network-control-plane-model src/main.nix), and site records --
+  # including endpointAssignment -- through canonicalSites[].facts. Both carriers
+  # already exist; nothing here invents one.
   cpmFixture = {
-    control_plane_model = {
-      deployment.hosts.s-router-test-clients = {
+    deploymentHosts.s-router-test-clients = {
         bridgeNetworks.client = {
           mode = "vlan";
           parent = "eth0";
@@ -52,27 +56,37 @@ let
           role = "management";
           vlan = 2;
         };
-      };
-      data."mini-smt"."FS-380-HDS-020-SDS-010-SMS-120".endpointAssignment.prod-like-vlan4-client01 = {
-        bridge = "client";
-        family = "dual";
-        mode = "static";
-        name = "prod-like-vlan4-client01";
-        static = {
-          address = "10.38.120.10";
-          address6 = "fd42:380:120::10";
-          gateway4 = "10.38.120.1";
-          gateway6 = "fd42:380:120::1";
-          prefixLength = 24;
-          prefixLength6 = 64;
-          dnsServers = [ "10.38.120.1" ];
-        };
-      };
     };
+  };
+  canonicalCollections = {
+    canonicalSites.sites = [
+      {
+        enterprise = "mini-smt";
+        site = "FS-380-HDS-020-SDS-010-SMS-120";
+        facts.endpointAssignment.prod-like-vlan4-client01 = {
+          bridge = "client";
+          family = "dual";
+          mode = "static";
+          name = "prod-like-vlan4-client01";
+          static = {
+            address = "10.38.120.10";
+            address6 = "fd42:380:120::10";
+            gateway4 = "10.38.120.1";
+            gateway6 = "fd42:380:120::1";
+            prefixLength = 24;
+            prefixLength6 = 64;
+            dnsServers = [ "10.38.120.1" ];
+          };
+        };
+      }
+    ];
   };
   moduleFn = renderer.hostModule {
     hostName = "s-router-test-clients";
     cpm = cpmFixture;
+    # Sibling of the CPM in the validated bundle, so a module argument rather
+    # than a field of `cpm`.
+    inherit canonicalCollections;
     mode = "test";
   };
   result = moduleFn { config = {}; };

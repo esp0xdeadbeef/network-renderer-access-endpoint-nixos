@@ -167,14 +167,11 @@ let
     else
       [ ];
 
-  cpmSiteData = cpmOutput: collections:
-    let canonical = canonicalSiteFacts collections; in
-    if canonical != [ ] then
-      canonical
-    else
-      builtins.concatLists (
-        map builtins.attrValues (builtins.attrValues (cpmOutput.control_plane_model.data or { }))
-      );
+  # Site records come from the validated bundle's canonical collections and
+  # nowhere else. The plain control-plane model is not a carrier here:
+  # RR_RAW_CPM_INPUT forbids reading it, because a renderer that does cannot tell
+  # whether a canonical field is present or false.
+  cpmSiteData = cpmOutput: collections: canonicalSiteFacts collections;
 
   endpointAssignmentsFromCpm = cpmOutput: collections:
     if cpmOutput ? endpointAssignment then
@@ -425,9 +422,18 @@ let
       provenance = buildProvenance {
         inherit cpmOutput mode endpointAssignments;
       };
-      cpmEnterprises = cpmOutput.control_plane_model.data or { };
-      enterpriseData = cpmEnterprises;
       siteData = cpmSiteData cpmOutput canonicalCollections;
+      # Present-ness gate only: "did the caller supply any network data at all".
+      # Built from the canonical site list and the deployment-host carrier, so it
+      # does not depend on the plain control-plane model.
+      cpmEnterprises =
+        if siteData != [ ] then
+          { canonical = siteData; }
+        else if builtins.isAttrs (cpmOutput.deploymentHosts or null) && cpmOutput.deploymentHosts != { } then
+          { deploymentHosts = cpmOutput.deploymentHosts; }
+        else
+          { };
+      enterpriseData = cpmEnterprises;
       fixtureEps = { };
       hasTopEndpointAssignments = (cpmOutput.endpointAssignment or { }) != { };
       hasContainers = cpmOutput ? containers && cpmOutput.containers != { };
@@ -453,8 +459,6 @@ let
           cpmOutput.bridgeNetworks
         else if builtins.isAttrs (cpmOutput.deploymentHosts.${hostName}.bridgeNetworks or null) then
           cpmOutput.deploymentHosts.${hostName}.bridgeNetworks
-        else if builtins.isAttrs (cpmOutput.control_plane_model.deployment.hosts.${hostName}.bridgeNetworks or null) then
-          cpmOutput.control_plane_model.deployment.hosts.${hostName}.bridgeNetworks
         else
           { };
       hostUplinks =
@@ -462,8 +466,6 @@ let
           cpmOutput.uplinks
         else if builtins.isAttrs (cpmOutput.deploymentHosts.${hostName}.uplinks or null) then
           cpmOutput.deploymentHosts.${hostName}.uplinks
-        else if builtins.isAttrs (cpmOutput.control_plane_model.deployment.hosts.${hostName}.uplinks or null) then
-          cpmOutput.control_plane_model.deployment.hosts.${hostName}.uplinks
         else
           { };
       cpmBridgeNetworks = hostBridgeNetworks;
@@ -1070,9 +1072,14 @@ let
         else
           null;
     in
-    if explicitCpm != null then
+    # `cpm`/`controlPlane` is optional now: it is the legacy carrier for
+    # deployment-host facts and endpointAssignment. A caller that supplies the
+    # validated bundle's canonical content needs neither, and requiring it was
+    # what forced the flake wrapper to hand over the producer's unvalidated
+    # envelope -- the plain control-plane model RR_RAW_CPM_INPUT forbids reading.
+    if explicitCpm != null || (rendererInput ? canonicalCollections) then
       hostModuleFromCpmOutput {
-        cpmOutput = explicitCpm;
+        cpmOutput = if explicitCpm == null then { } else explicitCpm;
         canonicalCollections = rendererInput.canonicalCollections or { };
         hostName = rendererInput.hostName or "s-router-test-clients";
         # FS-310-HDS-030-SDS-010-SMS-110: caller must supply mode for non-test materialization.
@@ -1089,7 +1096,7 @@ let
             selected;
       }
     else
-      throw "network-renderer-access-endpoint-nixos.hostModule: 'cpm' or 'controlPlane' is required; use hostModuleFromPaths for path-based rendering";
+      throw "network-renderer-access-endpoint-nixos.hostModule: 'canonicalCollections' (the validated bundle's canonical content), or the legacy 'cpm'/'controlPlane' carrier, is required; use hostModuleFromPaths for path-based rendering";
 
 in
 {
