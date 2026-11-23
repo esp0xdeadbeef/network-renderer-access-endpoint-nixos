@@ -157,9 +157,9 @@ let
   # `endpointAssignment` this renderer needs -- verified against a real bundle, so
   # nothing here is re-derived. The CPM walk below remains only as the fallback for
   # callers that hand the legacy shape; migrating those callers is what removes it.
-  canonicalSiteFacts = cpmOutput:
+  canonicalSiteFacts = collections:
     let
-      sites = (cpmOutput.canonicalCollections or { }).canonicalSites or { };
+      sites = (if builtins.isAttrs collections then collections else { }).canonicalSites or { };
       entries = sites.sites or [ ];
     in
     if builtins.isList entries then
@@ -167,8 +167,8 @@ let
     else
       [ ];
 
-  cpmSiteData = cpmOutput:
-    let canonical = canonicalSiteFacts cpmOutput; in
+  cpmSiteData = cpmOutput: collections:
+    let canonical = canonicalSiteFacts collections; in
     if canonical != [ ] then
       canonical
     else
@@ -176,14 +176,14 @@ let
         map builtins.attrValues (builtins.attrValues (cpmOutput.control_plane_model.data or { }))
       );
 
-  endpointAssignmentsFromCpm = cpmOutput:
+  endpointAssignmentsFromCpm = cpmOutput: collections:
     if cpmOutput ? endpointAssignment then
       cpmOutput.endpointAssignment
     else
       builtins.foldl'
         (acc: site: acc // (site.endpointAssignment or { }))
         { }
-        (cpmSiteData cpmOutput);
+        (cpmSiteData cpmOutput collections);
 
   endpointBridge = name: assignment:
     let
@@ -411,19 +411,23 @@ let
     , hostName ? "s-router-test-clients"
     , mode ? "test"
     , sopsModule ? null
+    , # The validated bundle's canonical collections. A SIBLING of the control-plane
+      # model in the bundle, not a field of it, so it is threaded separately and
+      # defaulted for the legacy path-based builder, which has no bundle.
+      canonicalCollections ? { }
     ,
     }:
 
     { config, ... }:
 
     let
-      endpointAssignments = endpointAssignmentsFromCpm cpmOutput;
+      endpointAssignments = endpointAssignmentsFromCpm cpmOutput canonicalCollections;
       provenance = buildProvenance {
         inherit cpmOutput mode endpointAssignments;
       };
       cpmEnterprises = cpmOutput.control_plane_model.data or { };
       enterpriseData = cpmEnterprises;
-      siteData = cpmSiteData cpmOutput;
+      siteData = cpmSiteData cpmOutput canonicalCollections;
       fixtureEps = { };
       hasTopEndpointAssignments = (cpmOutput.endpointAssignment or { }) != { };
       hasContainers = cpmOutput ? containers && cpmOutput.containers != { };
@@ -1045,6 +1049,7 @@ let
     in
     hostModuleFromCpmOutput {
       inherit cpmOutput hostName mode;
+      canonicalCollections = { };
       sopsModule =
         if routingSopsPath == null then
           null
@@ -1068,6 +1073,7 @@ let
     if explicitCpm != null then
       hostModuleFromCpmOutput {
         cpmOutput = explicitCpm;
+        canonicalCollections = rendererInput.canonicalCollections or { };
         hostName = rendererInput.hostName or "s-router-test-clients";
         # FS-310-HDS-030-SDS-010-SMS-110: caller must supply mode for non-test materialization.
         mode = rendererInput.mode or "test";
