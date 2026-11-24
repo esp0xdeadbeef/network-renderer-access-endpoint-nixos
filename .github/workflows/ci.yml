@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read   # tests/test-s88-ci-gate.sh reads CI history
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -41,6 +42,9 @@ jobs:
   tests:
     name: "test suite"
     runs-on: ubuntu-latest
+    env:
+      # tests/test-s88-ci-gate.sh reads the last CI run; needs actions: read.
+      GH_TOKEN: ${{ github.token }}
     timeout-minutes: 300
     steps:
       # Test/nix scratch must not depend on the image's /tmp. The runner
