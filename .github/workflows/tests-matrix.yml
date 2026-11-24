@@ -188,6 +188,39 @@ jobs:
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
 
+      # Siblings the tests need but flake.lock CANNOT pin, with a reason.
+      #
+      # `tests/test-canonical-collection-loss.sh` imports
+      # network-realization-model/src/default.nix directly, because the check it
+      # audits (canonicalFor) lives there. It cannot be a flake input: this
+      # repository is an input OF network-realization-model, so pinning it back
+      # would be a cycle. Without this step the suite failed with
+      #
+      #   FAIL CANONICAL-COLLECTION-LOSS: no realization-model checkout at
+      #   .../network-realization-model
+      #
+      # which is the correct behaviour for the test (it refuses to pass without the
+      # thing it audits) and an unmet dependency for CI. The revision is main at the
+      # time of the run, exactly as a developer's ../network-realization-model is: a
+      # test that audits another repository's current code and pins that code would
+      # only ever audit the pin.
+      - name: "Check out the realization model (unpinnable sibling)"
+        # One shared workflow for the whole fleet: the step is present everywhere and
+        # runs only where the test that needs it exists. An unconditional step here
+        # forks this file, and a forked workflow is a gate that answers differently per
+        # repository.
+        if: hashFiles('tests/test-canonical-collection-loss.sh') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(dirname "$GITHUB_WORKSPACE")"
+          target="${workspace}/network-realization-model"
+          [[ -e "${target}" ]] && exit 0
+          git init --quiet "${target}"
+          git -C "${target}" remote add origin "https://github.com/esp0xdeadbeef/network-realization-model.git"
+          git -C "${target}" fetch --quiet --depth 1 origin main
+          git -C "${target}" checkout --quiet FETCH_HEAD
+
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
         env:
