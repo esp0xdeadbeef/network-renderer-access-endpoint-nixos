@@ -43,8 +43,9 @@ trap 'rm -f "${log}"' EXIT
 #   - `tests/lib/test-common.sh` is sourced when the repository has one;
 #   - the trace id (the file name, without .sh) is passed as $1, because the cases
 #     read `trace_id="${1:-...}"` and run with $0 = this script otherwise;
-#   - a case that cannot run here prints `SKIP ` and exits 0, and is reported as
-#     skipped rather than passed.
+#   - a case that prints `SKIP ` is reported as FAIL. Skipping is not a verdict: it
+#     is indistinguishable from a green run in a summary, so it hides the fact that
+#     nothing was tested.
 # The case runs SOURCED, which is how every case found its own directory in the
 # per-repository runners before the matrix existed. Sourcing means `$0` is this
 # runner, not the case, so a case that located itself with `dirname "$0"`
@@ -75,10 +76,14 @@ timeout "${timeout_seconds}" bash -c '
   source "$0"
 ' "${test_path}" "$(basename "${test_path}" .sh)" "${repo_root}" >"${log}" 2>&1 || status=$?
 
-if ((status == 0)) && grep -q '^SKIP ' "${log}"; then
+# A case that declares SKIP is a case that does not test. It is reported as a
+# failure on purpose: a skip that reads as green is how a suite claims coverage it
+# does not have. Either make the case run in this environment (check the subject out,
+# build the fixture) or delete it -- there is no third option that belongs in CI.
+if grep -q '^SKIP ' "${log}"; then
   cat "${log}"
-  echo "SKIP $(basename "${test_path}")"
-  exit 0
+  echo "FAIL $(basename "${test_path}"): the case declared SKIP; a skipped case is not a verdict. Make it run here, or delete it." >&2
+  exit 1
 fi
 
 cat "${log}"
