@@ -45,18 +45,35 @@ trap 'rm -f "${log}"' EXIT
 #     read `trace_id="${1:-...}"` and run with $0 = this script otherwise;
 #   - a case that cannot run here prints `SKIP ` and exits 0, and is reported as
 #     skipped rather than passed.
+# The case runs SOURCED, which is how every case found its own directory in the
+# per-repository runners before the matrix existed. Sourcing means `$0` is this
+# runner, not the case, so a case that located itself with `dirname "$0"`
+# resolved the REPO to the caller's working directory: under `run-one.sh` from
+# inside the repo that happened to be right, and under CI's shard loop it";
+# resolved to the parent of the checkout and `nix run "$ROOT#compile"` failed
+# with "path ... does not contain a 'flake.nix'". Nine cases were red for that
+# one reason and for no defect in what they assert.
+#
+# Both halves of the fix are present and neither is a workaround for the other:
+#   * each of those cases now locates itself with ${BASH_SOURCE[0]}, which is
+#     the case file even when it is sourced, so a case is correct under any
+#     runner including `bash tests/x.sh`;
+#   * `$0` in the shell below is the case's own path, so the `dirname "$0"`
+#     spelling that caused this keeps working -- for a case that has not been
+#     converted yet, or one written later by copying an old one. `$0` is the
+#     argument to `bash -c`, and it survives the `set --` that installs the
+#     trace id because that only replaces the positional parameters.
 status=0
 timeout "${timeout_seconds}" bash -c '
-  _file="$1"
-  _trace="$2"
-  _repo="$3"
+  _trace="$1"
+  _repo="$2"
   if [[ -f "${_repo}/tests/lib/test-common.sh" ]]; then
     # shellcheck source=/dev/null
     source "${_repo}/tests/lib/test-common.sh"
   fi
   set -- "${_trace}"
-  source "${_file}"
-' _ "${test_path}" "$(basename "${test_path}" .sh)" "${repo_root}" >"${log}" 2>&1 || status=$?
+  source "$0"
+' "${test_path}" "$(basename "${test_path}" .sh)" "${repo_root}" >"${log}" 2>&1 || status=$?
 
 if ((status == 0)) && grep -q '^SKIP ' "${log}"; then
   cat "${log}"
