@@ -60,8 +60,9 @@ mapfile -t files < <(
 )
 
 if ((${#files[@]} == 0)); then
-  echo "SKIP TRACE-ID-CHAINS: no source or documentation files under ${scan_root}"
-  exit 0
+  echo "FAIL TRACE-ID-CHAINS: no source or documentation files under ${scan_root}" >&2
+  echo "  the scan root is the repository; an empty one means the check did not run" >&2
+  exit 1
 fi
 
 echo "  files scanned: ${#files[@]}"
@@ -114,8 +115,8 @@ for file in "${files[@]}"; do
 done
 
 if ((${#filtered[@]} == 0)); then
-  echo "SKIP TRACE-ID-CHAINS: only this file was found"
-  exit 0
+  echo "FAIL TRACE-ID-CHAINS: only this test was found; nothing to check" >&2
+  exit 1
 fi
 
 scan_files "${scan_root}" "${filtered[@]}" >"${report}" || true
