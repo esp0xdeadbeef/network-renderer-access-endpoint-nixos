@@ -49,17 +49,19 @@ permissions:
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
-  # Cancel a superseded run on a PULL REQUEST, never on main.
+  # A newer run interrupts an older one, on main included.
   #
-  # A main run is the record of that commit: cancelling it destroys the only
-  # evidence of whether the commit was good, and it is what a red/green history is
-  # read from. Fine while commits land minutes apart; measured, ten pushes in
-  # fifteen minutes (two agents) left every matrix run but the first "cancelled",
-  # so the fleet had no results at all.
+  # This was `github.event_name == 'pull_request'`, on the measurement that ten
+  # pushes in fifteen minutes left every matrix run but the first "cancelled", so
+  # the fleet had no results. That measurement predates the merge: two workflows
+  # (`CI` and `Tests (matrix)`) ran on every push and each queued its own sweep, so
+  # the queue -- not the concurrency rule -- is what starved the runs. With one
+  # workflow, a superseded run has no verdict worth keeping: it answers a question
+  # about a commit nobody will ship, at 1,233 jobs a sweep.
   #
-  # A pull-request run for a commit that has been superseded is worth nothing, so
-  # cancelling there is pure savings.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # What replaces the old rule is that the *newest* commit is always evaluated: a
+  # run cancelled by a newer commit is not evidence, and the replacement run is.
+  cancel-in-progress: true
 
 jobs:
   # The ordering this workflow exists for, asserted BEFORE anything expensive.
