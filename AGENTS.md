@@ -7,11 +7,11 @@ Instructions for AI agents working in this repository.
 GitHub Actions is the source of truth for whether this repository is healthy.
 The workflows live in `.github/workflows/`.
 
-`ci.yml` runs on every push to `main`, on every pull request, and on demand.
-It has two jobs:
-
-- `flake-check` evaluates the flake.
-- `test suite` runs `./run-all-tests.sh` after installing `rg`, `sops` and `yq`.
+`tests-matrix.yml` runs on every push to `main`, and on demand. It is the only
+workflow: one job per test, discovered from the repository's own contract, with the
+flake check as the job every test job waits behind -- a commit that does not evaluate
+never starts 288 test jobs, and "CI is green" cannot mean "the flake evaluates" while
+the tests are still running. A test that fails is the answer for that commit.
 
 `flake-lock-update.yml`, where present, bumps `flake.lock` nightly and pushes
 only when the flake still checks.

@@ -62,7 +62,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The flake check runs FIRST, in this workflow, so a commit that does not even
+  # evaluate never starts one job per test. It used to live in `ci.yml`, which ran
+  # in parallel: a green "CI" badge then meant "the flake evaluates", while the
+  # tests that decide the commit could still be running or red, and two workflows
+  # on one push is two answerable questions instead of one.
+  flake-check:
+    name: "nix flake check"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # Test/nix scratch must not depend on the image's /tmp. The runner exports
+      # RUNNER_TEMP for exactly this purpose; publish it to the remaining steps
+      # (job-level env cannot read the runner context).
+      - name: "Use the runner temp dir for scratch"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in TMPDIR TMP TEMP; do
+            printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          done
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      # Evaluate-only gate: the test jobs build and run the real artifacts, so this
+      # step must not duplicate their work.
+      - name: "Check flake outputs"
+        run: nix flake check --no-build -L --show-trace
+
   list:
+    name: "list tests"
+    needs: flake-check
     name: "list tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
