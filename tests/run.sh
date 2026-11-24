@@ -1,23 +1,5 @@
 #!/usr/bin/env bash
-# Test runner for network-renderer-access-endpoint-nixos
-# Invokes all focused construction tests.
+# Shim for the two repositories that documented `bash tests/run.sh`. Same reason as
+# `run-all-tests.sh`: one implementation in `tests/test.sh`, this file forwards.
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-
-echo "=== network-renderer-access-endpoint-nixos test runner ==="
-echo ""
-
-for test in FS-*-HDS-*-SDS-*-SMS-*.sh; do
-  if [ -x "$test" ] || [ -f "$test" ]; then
-    echo "--- Running: $test ---"
-    bash "$test" || {
-      echo "FAILED: $test"
-      exit 1
-    }
-    echo ""
-  fi
-done
-
-echo "All tests passed."
+exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test.sh" "$@"
