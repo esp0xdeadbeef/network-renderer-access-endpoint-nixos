@@ -166,9 +166,13 @@ jobs:
             printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
           done
       - uses: actions/checkout@v6
-      - uses: cachix/install-nix-action@v31
+      # 3 MB single binary, no daemon, no installer script. Measured against
+      # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
+      # the multi-user installer (users, systemd units, /etc/nix) in every job; the
+      # suites need `nix eval` and a store, not a daemon.
+      - uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra_nix_config: |
+          nix_conf: |
             experimental-features = nix-command flakes
 
       # The pins the commit SHIPS. This is the blocking gate: a commit that does not
@@ -194,9 +198,13 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - uses: actions/checkout@v6
-      - uses: cachix/install-nix-action@v31
+      # 3 MB single binary, no daemon, no installer script. Measured against
+      # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
+      # the multi-user installer (users, systemd units, /etc/nix) in every job; the
+      # suites need `nix eval` and a store, not a daemon.
+      - uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra_nix_config: |
+          nix_conf: |
             experimental-features = nix-command flakes
       - name: "Refresh the pins"
         shell: bash
@@ -292,9 +300,13 @@ jobs:
             printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
           done
       - uses: actions/checkout@v6
-      - uses: cachix/install-nix-action@v31
+      # 3 MB single binary, no daemon, no installer script. Measured against
+      # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
+      # the multi-user installer (users, systemd units, /etc/nix) in every job; the
+      # suites need `nix eval` and a store, not a daemon.
+      - uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra_nix_config: |
+          nix_conf: |
             experimental-features = nix-command flakes
 
       # jq and ripgrep ship with the runner image. sops is 45 MB and yq is 10 MB,
