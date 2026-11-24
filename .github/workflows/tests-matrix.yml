@@ -73,23 +73,32 @@ jobs:
             echo "no entrypoints discovered; the matrix will be empty"
             exit 0
           fi
-          # GitHub caps a matrix at 256 jobs. One job per test therefore breaks on
-          # the largest repositories here -- measured: 287 entrypoints in the
-          # control-plane model and 486 in network-labs, whose runs failed with
-          # "matrix ... exceeds the maximum" before a single test started. The
-          # matrix is shards instead, and each shard runs a slice of the same
-          # sorted discovery list, so the assignment is deterministic.
-          shard_size="${TEST_SHARD_SIZE:-8}"
-          shards=$(( (count + shard_size - 1) / shard_size ))
-          ((shards > 256)) && shards=256
-          echo "shards=${shards}" >> "$GITHUB_OUTPUT"
-          echo "shard_size=${shard_size}" >> "$GITHUB_OUTPUT"
-          json="$(python3 -c "import json;print(json.dumps({'shard':list(range(${shards}))}))")"
-          echo "matrix=${json}" >> "$GITHUB_OUTPUT"
-          echo "discovered ${count} entrypoint(s) in ${shards} shard(s) of up to ${shard_size}"
+          # GitHub runs up to 256 matrix jobs; the cap is on the MATRIX, not on the
+          # parallelism within it. So the default is one job per test -- every test in
+          # its own runner, in parallel, named after itself -- and sharding is only a
+          # fallback for a repository whose discovery exceeds the cap. Measured:
+          # 124 entrypoints here, 287 in the control-plane model, 486 in network-labs.
+          # Sharding 124 into 16 jobs of 8 was strictly worse: same wall clock, less
+          # parallelism, and a failure named "shard 7" instead of the test.
+          max_jobs=250
+          if (( count <= max_jobs )); then
+            json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+            echo "shards=0" >> "$GITHUB_OUTPUT"
+            echo "shard_size=1" >> "$GITHUB_OUTPUT"
+            echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+            echo "discovered ${count} entrypoint(s): one job per test, in parallel"
+          else
+            shard_size="${TEST_SHARD_SIZE:-$(( (count + max_jobs - 1) / max_jobs ))}"
+            shards=$(( (count + shard_size - 1) / shard_size ))
+            echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+            echo "shard_size=${shard_size}" >> "$GITHUB_OUTPUT"
+            json="$(python3 -c "import json;print(json.dumps({'shard':list(range(${shards}))}))")"
+            echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+            echo "discovered ${count} entrypoint(s): ${shards} shard(s) of ${shard_size}, because ${count} exceeds the ${max_jobs}-job matrix cap"
+          fi
 
   test:
-    name: "shard ${{ matrix.shard }}"
+    name: "${{ matrix.test || format('shard {0}', matrix.shard) }}"
     needs: list
     if: needs.list.outputs.count != '0'
     runs-on: ubuntu-latest
@@ -121,7 +130,7 @@ jobs:
             nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
           printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
 
-      - name: "Run shard ${{ matrix.shard }}"
+      - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
@@ -140,6 +149,12 @@ jobs:
           S88_CI_GATE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork && 'off' || 'on' }}
         run: |
           set -uo pipefail
+          # One test per job when the matrix fits; otherwise this job owns every
+          # entrypoint whose index lands in this shard.
+          if [[ -n "${{ matrix.test }}" ]]; then
+            exec bash tests/run-one.sh "tests/${{ matrix.test }}"
+          fi
+
           # The same discovery and the same sort as the list job, so shard N owns
           # exactly the tests it was counted for: index % shards == N.
           if [[ -f scripts/lib/discover-tests.sh ]]; then
