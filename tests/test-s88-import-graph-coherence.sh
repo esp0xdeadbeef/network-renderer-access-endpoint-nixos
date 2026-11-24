@@ -184,14 +184,31 @@ echo "  source files: ${#tree_files[@]} (nix ${nix_count}, python ${py_count})"
 nix_edges_of() {
   local file="$1" dir raw target
   dir="$(dirname "${file}")"
+  # Repo-root-anchored imports, as the CLI writes them.
+  local repo_root_for_edges="${repo_root}"
   while IFS= read -r raw; do
     [[ -n "${raw}" ]] || continue
-    target="$(realpath -m "${dir}/${raw}" 2>/dev/null || true)"
+    case "${raw}" in
+      /*) target="$(realpath -m "${raw}" 2>/dev/null || true)" ;;
+      *) target="$(realpath -m "${dir}/${raw}" 2>/dev/null || true)" ;;
+    esac
     [[ -n "${target}" ]] || continue
     [[ -d "${target}" ]] && target="${target}/default.nix"
     [[ -f "${target}" ]] || continue
     printf 'EDGE\t%s\t%s\n' "${file}" "${target}"
-  done < <(grep -oE '(\.\.?/)+[A-Za-z0-9._/-]+\.nix' "${file}" 2>/dev/null | sort -u || true)
+  done < <(
+    {
+      # Relative imports: `../../Unit/module/x.nix`.
+      grep -oE '(\.\.?/)+[A-Za-z0-9._/-]+\.nix' "${file}" 2>/dev/null
+      # Root-anchored imports: `"${self_path}/s88/Enterprise/cli/render-node.nix"`.
+      # The CLI embeds its Nix expression in a quoted string, so the prefix is a
+      # variable and only the `/s88/...` tail is literal. Anchor it at the
+      # repository root; that is what the variable resolves to at runtime
+      # (`${self.outPath}` / `${self_path}`).
+      grep -oE '/s88/[A-Za-z0-9._/-]+\.nix' "${file}" 2>/dev/null \
+        | sed "s|^|${repo_root_for_edges}|"
+    } | sort -u || true
+  )
   return 0
 }
 
@@ -265,6 +282,18 @@ mapfile -t entrypoints < <(
   # Python renderers are driven by a script or module at or near the root.
   find "${repo_root}" -maxdepth 2 -type f -name '*.py' -not -path '*/s88/*' -not -path '*/tests/*' \
     -not -path '*/.git/*' 2>/dev/null | LC_ALL=C sort
+  # The renderer CLIs. They are shell scripts that carry Nix expressions
+  # (`nix eval --impure --expr '... import (builtins.toPath "${self}/s88/...")'`),
+  # so the `.nix` they reach is load-bearing while no `.nix` file names it --
+  # and a scanner that only reads `.nix` reports those modules as orphaned.
+  # Measured on this repository: s88/Enterprise/cli/render-node.nix is the
+  # document -> node renderer the CLI docs advertise and
+  # tests/lib/FS-460-HDS-010-SDS-010-SMS-010/
+  # test-FS-460-HDS-010-SDS-010-SMS-010-cli-render-node.sh exercises, and it was
+  # reported as
+  # decoration. bin/ is where a repository's entrypoints live by construction,
+  # so scan it rather than naming one file here.
+  find "${repo_root}/bin" -maxdepth 1 -type f 2>/dev/null | LC_ALL=C sort
 )
 
 # ---------------------------------------------------------------------------
@@ -284,6 +313,11 @@ for file in ${entrypoints[@]+"${entrypoints[@]}"}; do scan_files+=("${file}"); d
 for file in "${scan_files[@]}"; do
   case "${file}" in
     *.nix) nix_edges_of "${file}" ;;
+    # A shell entrypoint (the CLI) embeds its Nix expressions in a quoted
+    # string, so the same relative-path scan applies to it. Without this the
+    # module it imports is reported as an orphan and the only way to make the
+    # checker happy is to delete a working renderer.
+    *bin/*) nix_edges_of "${file}" ;;
   esac
 done >>"${edges_file}" || true
 
