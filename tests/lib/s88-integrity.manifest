@@ -6,5 +6,5 @@
 # so the change is reviewed instead of landing quietly. See
 # tests/test-s88-test-integrity.sh for what this does and does not detect.
 6902b55da31dd91046c857c26495a65234232678785667ef6be30528c23e30a4  tests/test-s88-ci-gate.sh
-9a9f33ec6a22eff5f051459af1e2a53a9c93b935088d38fab50187cb552fcef4  tests/test-s88-import-graph-coherence.sh
+ed696f8df825e691f762bc27b45ae0848933c6abf122db2387d013a0b3005b2a  tests/test-s88-import-graph-coherence.sh
 a5c7a4bde08305aca2c7e31c242d58024a871c26f8c71f705c7bc68efe7fe596  tests/test-s88-test-integrity.sh

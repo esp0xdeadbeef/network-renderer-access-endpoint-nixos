@@ -321,6 +321,51 @@ for file in "${scan_files[@]}"; do
   esac
 done >>"${edges_file}" || true
 
+# ---------------------------------------------------------------------------
+# Follow the graph THROUGH files that live outside the level tree.
+#
+# The edge set above is one level deep: it starts from the level tree and from
+# the entrypoints, so a level file reached only via an intermediate `.nix` that
+# is neither is reported as an orphan. That intermediate is real and ordinary --
+# `flake.nix` -> `modules/wireguard-provider-runtime.nix` ->
+# `s88/ControlModule/{addressing-services,firewall-nat,tunnel-runtime}.nix` is
+# how this repository ships its NixOS module -- so the defect is in the walk, not
+# in the tree. Measured here: three ControlModule files were reported as
+# unreachable while `modules/wireguard-provider-runtime.nix` named all three.
+#
+# The walk is transitive and bounded by the repository: a `.nix` under the repo
+# that is not under `s88/` is scanned once, when some already-scanned file names
+# it. Nothing outside the repository is read, and a file with no importer is
+# still an orphan because the walk only ever reaches files somebody names.
+# ---------------------------------------------------------------------------
+seen_files="$(mktemp)"
+trap 'rm -f "${edges_file}" "${seen_files}"' EXIT
+for file in "${scan_files[@]}"; do printf '%s\n' "$(realpath -m "${file}")" >>"${seen_files}"; done
+sort -u "${seen_files}" -o "${seen_files}"
+
+while :; do
+  # Every `.nix` under the repository that a scanned file already names, and that
+  # has not been scanned itself.
+  mapfile -t frontier < <(
+    awk -F'\t' '$1 == "EDGE" { print $3 }' "${edges_file}" 2>/dev/null \
+      | sort -u \
+      | while IFS= read -r target; do
+          [[ "${target}" == "${repo_root}"/* ]] || continue
+          [[ "${target}" == *.nix ]] || continue
+          [[ "${target}" == "${repo_root}/s88/"* ]] && continue
+          grep -qxF "${target}" "${seen_files}" && continue
+          printf '%s\n' "${target}"
+        done
+  )
+  ((${#frontier[@]} > 0)) || break
+  for file in "${frontier[@]}"; do
+    printf '%s\n' "${file}" >>"${seen_files}"
+    nix_edges_of "${file}" >>"${edges_file}" || true
+  done
+  sort -u "${seen_files}" -o "${seen_files}"
+done
+
+
 # Called once with the repository root: the resolver walks every level tree it
 # knows about, and absolute package imports (`from clabgen.s88.site import x`)
 # only resolve from there.
