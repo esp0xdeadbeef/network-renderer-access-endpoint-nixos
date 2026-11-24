@@ -106,4 +106,8 @@ jobs:
         shell: bash
         env:
           NETWORK_REPO_DIRECT_TEST_OK: "1"
+          # tests/test-s88-ci-gate.sh reads the last CI run; without a token it
+          # fails closed inside CI (auth missing is a defect there, not an
+          # environment fact), so the matrix job hands it one.
+          GH_TOKEN: ${{ github.token }}
         run: bash tests/run-one.sh "tests/${{ matrix.test }}"
