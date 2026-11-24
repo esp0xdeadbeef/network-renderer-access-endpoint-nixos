@@ -78,12 +78,6 @@ jobs:
     name: "workflow structure"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      # The ubuntu image ships Nix. Installing it again means downloading an
-      # installer and re-installing Nix on every run -- ~25s per job, up to 288
-      # jobs -- to produce the binary the runner already has. Flakes are off by
-      # default, so this is the only setup any job needs.
-      NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - uses: actions/checkout@v6
       # ---------------------------------------------------------------------
@@ -159,10 +153,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # The ubuntu image ships Nix. Installing it again means downloading an
-      # installer and re-installing Nix on every run -- ~25s per job, up to 288
-      # jobs -- to produce the binary the runner already has. Flakes are off by
-      # default, so this is the only setup any job needs.
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       # Test/nix scratch must not depend on the image's /tmp. The runner exports
@@ -176,6 +166,16 @@ jobs:
             printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
           done
       - uses: actions/checkout@v6
+
+      # Measured: `ubuntu-latest` does NOT ship Nix. This action is the plain
+      # upstream installer (~10s); Determinate's `determinate-nix-action` was
+      # removed because it downloads and runs the Determinate installer and
+      # re-installs Nix in every job -- 288 times per sweep -- to end up with the
+      # same `nix` binary.
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
 
       # Refresh the pins BEFORE evaluating anything.
       #
@@ -274,12 +274,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # The ubuntu image ships Nix. Installing it again means downloading an
-      # installer and re-installing Nix on every run -- ~25s per job, up to 288
-      # jobs -- to produce the binary the runner already has. Flakes are off by
-      # default, so this is the only setup any job needs.
       NIX_CONFIG: "experimental-features = nix-command flakes"
-
     strategy:
       # Not a failure: the shape of a CI run. One red per run means as many runs as
       # defects, and the whole point of the matrix is that one run reports them all.
@@ -295,9 +290,10 @@ jobs:
             printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
           done
       - uses: actions/checkout@v6
-      - name: "Nix from the image"
-        shell: bash
-        run: nix --version
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
 
       # The suites shell out to these, and the runner image does not ship them.
       - name: "Install test dependencies"
