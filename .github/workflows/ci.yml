@@ -1,10 +1,12 @@
 name: "CI"
 
+# No pull_request trigger: see tests-matrix.yml. Nothing here runs contributor code,
+# but the two workflows should agree about what a pull request can cause, and "nothing
+# until a maintainer says so" is the rule.
 on:
   push:
     branches:
       - main
-  pull_request:
   workflow_dispatch:
 
 permissions:

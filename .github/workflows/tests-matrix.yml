@@ -15,11 +15,27 @@ name: "Tests (matrix)"
 #     means one run reports every failure. A local run can still stop early;
 #   - a wedged test occupies one job, not the whole suite;
 #   - a `flake.lock` bump re-runs everything, which is what "bump lock" should do.
+# TRUST MODEL: no pull_request trigger, on purpose.
+#
+# The matrix runs the repository's own test code, and on a pull request that code is
+# whatever the contributor wrote -- including the workflow file itself, when the
+# branch lives in this repository. Read-only permissions bound the damage, but they do
+# not make it zero: the run still occupies runners, can print its token, and can add
+# cache or artifact entries. The alternative implemented here is to not run untrusted
+# code at all.
+#
+# What that costs: a pull request gets no suite result before merge. To validate one,
+# either land it (push to main) or, for a branch in this repository, dispatch this
+# workflow on that branch by hand with "Run workflow" -- `workflow_dispatch` requires
+# write access, so the decision is a maintainer's. A fork PR cannot be dispatched
+# directly; fetch its branch into this repository first, which is the review step.
+#
+# If pull_request is ever re-added, keep `permissions:` read-only, keep matrix values
+# in `env:` rather than spliced into `run:`, and leave GH_TOKEN empty for forks.
 on:
   push:
     branches:
       - main
-  pull_request:
   workflow_dispatch:
 
 # Read-only, and deliberately so: a pull_request from a same-repository branch runs
