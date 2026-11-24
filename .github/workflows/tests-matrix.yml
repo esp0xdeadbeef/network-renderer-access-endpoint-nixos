@@ -175,6 +175,11 @@ jobs:
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
         env:
+          # Matrix values are derived from filenames, which a pull request controls.
+          # They are passed as ENVIRONMENT, never spliced into a shell line: a file
+          # called `test-$(curl ...).sh` would otherwise be executed by the step that
+          # is supposed to run it. ${{ }} in `run:` is codegen, not quoting.
+          TEST_NAME: ${{ matrix.test }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.list.outputs.shards }}
           SHARD_SIZE: ${{ needs.list.outputs.shard_size }}
@@ -183,7 +188,12 @@ jobs:
           # fails closed inside CI (auth missing is a defect there, not an
           # environment fact), so the matrix job hands it one. Read-only: see the
           # permissions block above.
-          GH_TOKEN: ${{ github.token }}
+          # Empty on a fork pull request. GitHub already withholds secrets and gives a
+          # read-only token there; not handing one over at all removes the question,
+          # and S88_CI_GATE is off in that case so nothing needs it. On a same-repo
+          # branch PR the workflow file itself is attacker-controlled, which is why
+          # permissions stay read-only: see the block at the top.
+          GH_TOKEN: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && '' || github.token }}
           # Off for a fork pull request: the gate asks "is main green before we
           # start", which is not a question an untrusted branch can answer, and a
           # fork's token cannot read the base repository's history. Explicit off is
@@ -193,8 +203,8 @@ jobs:
           set -uo pipefail
           # One test per job when the matrix fits; otherwise this job owns every
           # entrypoint whose index lands in this shard.
-          if [[ -n "${{ matrix.test }}" ]]; then
-            exec bash tests/run-one.sh "tests/${{ matrix.test }}"
+          if [[ -n "${TEST_NAME:-}" ]]; then
+            exec bash tests/run-one.sh "tests/${TEST_NAME}"
           fi
 
           # The same discovery and the same sort as the list job, so shard N owns
