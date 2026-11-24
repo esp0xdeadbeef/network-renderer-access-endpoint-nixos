@@ -5,5 +5,5 @@
 # A change to a protected test must change this file in the same commit,
 # so the change is reviewed instead of landing quietly. See
 # tests/test-s88-test-integrity.sh for what this does and does not detect.
-ed696f8df825e691f762bc27b45ae0848933c6abf122db2387d013a0b3005b2a  tests/test-s88-import-graph-coherence.sh
+736ac9398d308190e52ac7fd7cde838f9aa55a3b3197b89a51493af94626f4d2  tests/test-s88-import-graph-coherence.sh
 a5c7a4bde08305aca2c7e31c242d58024a871c26f8c71f705c7bc68efe7fe596  tests/test-s88-test-integrity.sh
