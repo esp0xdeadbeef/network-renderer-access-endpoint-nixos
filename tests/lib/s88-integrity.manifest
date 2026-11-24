@@ -1,0 +1,9 @@
+# S88 test integrity manifest -- generated, not hand-edited.
+# PROTECTED-COUNT: 2
+#
+# Format: <sha256>  <path relative to the repository root>.
+# A change to a protected test must change this file in the same commit,
+# so the change is reviewed instead of landing quietly. See
+# tests/test-s88-test-integrity.sh for what this does and does not detect.
+30c3e53fb1a15bc4a3f5f726fc70c2fda566ddb6e122e76163065e9d6005631f  tests/test-s88-import-graph-coherence.sh
+a5c7a4bde08305aca2c7e31c242d58024a871c26f8c71f705c7bc68efe7fe596  tests/test-s88-test-integrity.sh
