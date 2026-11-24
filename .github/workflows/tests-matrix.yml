@@ -149,9 +149,50 @@ jobs:
           print("PASS FLAKE-GATE: one workflow; flake-check -> list -> test")
           CHECK
 
+
+  # The test jobs shell out to ripgrep, jq, sops and yq. Installing those in each job
+  # means resolving nixpkgs in each job: measured on `network-forwarding-model`, one
+  # `nix profile install` pulls the nixpkgs-unstable tarball plus 37 store paths,
+  # ~101 MiB, and that ran in every one of up to 288 jobs per sweep.
+  #
+  # The binaries are built once here and handed over as an artifact (~6 MiB), which is
+  # what "install the dependencies" means on a hosted runner: jobs are separate VMs, so
+  # a pre-step cannot leave anything in /nix/store for the next job, but it can leave
+  # a file.
+  deps:
+    name: "test dependencies"
+    needs: workflow-structure
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: "Build once"
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix profile install --accept-flake-config \
+            nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
+          mkdir -p "${RUNNER_TEMP}/bin"
+          for tool in rg jq sops yq; do
+            # -L: a profile entry is a symlink into the store, and an artifact
+            # cannot carry a store path the next job does not have.
+            cp -L "$(command -v "${tool}")" "${RUNNER_TEMP}/bin/${tool}"
+            "${RUNNER_TEMP}/bin/${tool}" --version | head -1
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-deps
+          path: "${{ runner.temp }}/bin"
+          retention-days: 1
+
   flake-check:
     name: "nix flake check"
-    needs: workflow-structure
+    needs: [workflow-structure, deps]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -297,14 +338,18 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # The suites shell out to these, and the runner image does not ship them.
-      - name: "Install test dependencies"
+      # Built once by the `deps` job, not resolved again here: see the comment on that
+      # job for the measurement (101 MiB of nixpkgs per test job).
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-deps
+          path: "${{ runner.temp }}/bin"
+      - name: "Put the dependencies on PATH"
         shell: bash
         run: |
           set -euo pipefail
-          nix profile install --accept-flake-config \
-            nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
-          printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+          chmod +x "${RUNNER_TEMP}/bin"/*
+          printf '%s\n' "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
 
       # The suites resolve sibling repositories as ../network-*, the developer
       # layout. Without them the cross-repository cases fail (or, worse, skip), and
