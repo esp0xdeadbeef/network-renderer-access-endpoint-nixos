@@ -150,49 +150,9 @@ jobs:
           CHECK
 
 
-  # The test jobs shell out to ripgrep, jq, sops and yq. Installing those in each job
-  # means resolving nixpkgs in each job: measured on `network-forwarding-model`, one
-  # `nix profile install` pulls the nixpkgs-unstable tarball plus 37 store paths,
-  # ~101 MiB, and that ran in every one of up to 288 jobs per sweep.
-  #
-  # The binaries are built once here and handed over as an artifact (~6 MiB), which is
-  # what "install the dependencies" means on a hosted runner: jobs are separate VMs, so
-  # a pre-step cannot leave anything in /nix/store for the next job, but it can leave
-  # a file.
-  deps:
-    name: "test dependencies"
-    needs: workflow-structure
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      NIX_CONFIG: "experimental-features = nix-command flakes"
-    steps:
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-      - name: "Build once"
-        shell: bash
-        run: |
-          set -euo pipefail
-          nix profile install --accept-flake-config \
-            nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
-          mkdir -p "${RUNNER_TEMP}/bin"
-          for tool in rg jq sops yq; do
-            # -L: a profile entry is a symlink into the store, and an artifact
-            # cannot carry a store path the next job does not have.
-            cp -L "$(command -v "${tool}")" "${RUNNER_TEMP}/bin/${tool}"
-            "${RUNNER_TEMP}/bin/${tool}" --version | head -1
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: test-deps
-          path: "${{ runner.temp }}/bin"
-          retention-days: 1
-
   flake-check:
     name: "nix flake check"
-    needs: [workflow-structure, deps]
+    needs: workflow-structure
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -338,18 +298,41 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # Built once by the `deps` job, not resolved again here: see the comment on that
-      # job for the measurement (101 MiB of nixpkgs per test job).
-      - uses: actions/download-artifact@v4
-        with:
-          name: test-deps
-          path: "${{ runner.temp }}/bin"
-      - name: "Put the dependencies on PATH"
+      # jq and ripgrep ship with the runner image. sops is 45 MB and yq is 10 MB,
+      # and 47 of 1689 test files name sops while 2 name yq -- so they are fetched
+      # only by the jobs whose test uses them.
+      #
+      # The artifact this replaces was built once and did not run: `cp -L` out of the
+      # Nix store copies the binary but not its closure, and the copied jq failed with
+      # "cannot execute: required file not found" (it loads libjq.so.1 from a store
+      # path the next job does not have). A store path is not a portable binary.
+      - name: "Install the tools this test uses"
         shell: bash
+        env:
+          TEST_NAME: ${{ matrix.test }}
         run: |
           set -euo pipefail
-          chmod +x "${RUNNER_TEMP}/bin"/*
-          printf '%s\n' "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          command -v jq >/dev/null || { echo "jq is missing from the runner image" >&2; exit 1; }
+          command -v rg >/dev/null || { echo "ripgrep is missing from the runner image" >&2; exit 1; }
+
+          # Matrix values come from filenames, so they are read from the environment,
+          # never spliced into the script text.
+          test_path="tests/${TEST_NAME}"
+          uses() {
+            grep -rqs -- "$1" "${test_path}" "tests/lib/$(basename "${test_path}" .sh)" 2>/dev/null
+          }
+          if uses sops; then
+            curl -fsSL --retry 3 -o /usr/local/bin/sops \
+              https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64
+            chmod +x /usr/local/bin/sops
+            sops --version
+          fi
+          if uses yq; then
+            curl -fsSL --retry 3 -o /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+            chmod +x /usr/local/bin/yq
+            yq --version
+          fi
 
       # The suites resolve sibling repositories as ../network-*, the developer
       # layout. Without them the cross-repository cases fail (or, worse, skip), and
@@ -362,15 +345,25 @@ jobs:
           set -euo pipefail
           workspace="$(dirname "$GITHUB_WORKSPACE")"
           if [[ ! -f flake.lock ]]; then nix flake lock; fi
-          nix eval --json --impure --expr '
-            let
-              l = builtins.fromJSON (builtins.readFile ./flake.lock);
-              root = l.nodes.root.inputs or { };
-              describe = name:
-                let n = l.nodes.${name}.locked or { };
-                in { type = n.type or ""; owner = n.owner or ""; repo = n.repo or ""; rev = n.rev or ""; };
-            in builtins.mapAttrs (_: name: describe name) root
-          ' > "$RUNNER_TEMP/inputs.json"
+          # python3, not `nix eval`: on the runner the evaluation pulled the flake
+          # inputs (network-labs and two nixpkgs revisions, ~200 MB) into the Git
+          # cache in every test job, to read a JSON file that is already on disk.
+          python3 - "$RUNNER_TEMP/inputs.json" <<'PARSE'
+          import json, sys
+          lock = json.load(open("flake.lock"))
+          root = (lock.get("nodes", {}).get("root", {}) or {}).get("inputs", {})
+          out = {}
+          for alias, name in root.items():
+              node = lock["nodes"].get(name, {}) if isinstance(name, str) else {}
+              locked = node.get("locked", {}) or {}
+              out[alias] = {
+                  "type": locked.get("type", ""),
+                  "owner": locked.get("owner", ""),
+                  "repo": locked.get("repo", ""),
+                  "rev": locked.get("rev", ""),
+              }
+          json.dump(out, open(sys.argv[1], "w"))
+          PARSE
           jq -r 'to_entries[] | select(.value.type == "github" and .value.owner == "esp0xdeadbeef")
                  | [.key, .value.repo, .value.rev] | @tsv' "$RUNNER_TEMP/inputs.json" > "$RUNNER_TEMP/siblings.tsv"
           while IFS=$'\t' read -r name repo rev; do
