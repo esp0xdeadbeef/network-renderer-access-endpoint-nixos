@@ -9,11 +9,20 @@ on:
 
 permissions:
   contents: read
-  actions: read   # tests/test-s88-ci-gate.sh reads CI history
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
+  # Cancel a superseded run on a PULL REQUEST, never on main.
+  #
+  # A main run is the record of that commit: cancelling it destroys the only
+  # evidence of whether the commit was good, and it is what a red/green history is
+  # read from. Fine while commits land minutes apart; measured, ten pushes in
+  # fifteen minutes (two agents) left every matrix run but the first "cancelled",
+  # so the fleet had no results at all.
+  #
+  # A pull-request run for a commit that has been superseded is worth nothing, so
+  # cancelling there is pure savings.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   flake-check:
