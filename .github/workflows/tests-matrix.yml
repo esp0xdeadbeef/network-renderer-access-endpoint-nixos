@@ -158,9 +158,6 @@ jobs:
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
-      # Test/nix scratch must not depend on the image's /tmp. The runner exports
-      # RUNNER_TEMP for exactly this purpose; publish it to the remaining steps
-      # (job-level env cannot read the runner context).
       - name: "Use the runner temp dir for scratch"
         shell: bash
         run: |
@@ -169,43 +166,45 @@ jobs:
             printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
           done
       - uses: actions/checkout@v6
-
-      # Measured: `ubuntu-latest` does NOT ship Nix. This action is the plain
-      # upstream installer (~10s); Determinate's `determinate-nix-action` was
-      # removed because it downloads and runs the Determinate installer and
-      # re-installs Nix in every job -- 288 times per sweep -- to end up with the
-      # same `nix` binary.
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      # Refresh the pins BEFORE evaluating anything.
-      #
-      # The committed lock is what the repository claims to work with, and it goes
-      # stale silently: measured this session, `network-renderer-nixos` still pinned
-      # `network-realization-model` at a revision that hands renderers the plain CPM,
-      # so its boundary check passed against code that no longer existed. A nightly
-      # bumper discovers that a day later; this discovers it on the commit.
-      #
-      # The update is deliberately NOT propagated to the test jobs. They restore
-      # sibling repositories from the committed lock, and re-resolving ~10 inputs in
-      # each of up to 288 jobs buys nothing but a rate-limit bill. The two jobs
-      # therefore answer two questions: "does this commit still evaluate against
-      # today's fleet" (flake-check) and "does it pass with the pins it ships" (test).
+      # The pins the commit SHIPS. This is the blocking gate: a commit that does not
+      # evaluate with its own lock is not a commit whose tests mean anything.
+      - name: "Check flake outputs (committed pins)"
+        run: nix flake check --no-build -L --show-trace
+
+  # Drift is a report, not a gate.
+  #
+  # This job updates every input and evaluates against the fleet as it is on main
+  # right now. Measured the first time it ran: `network-forwarding-model` deleted
+  # `compiler-input/sites/build.nix` (f843c4f) and `network-control-plane-model`
+  # still references it, so today's main does not evaluate. That is worth knowing
+  # every push -- the alternative is a nightly bumper discovering it a day later --
+  # but it must not stop 288 test jobs that test the commit under review.
+  flake-drift:
+    name: "nix flake check (today's pins)"
+    needs: workflow-structure
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
       - name: "Refresh the pins"
         shell: bash
         run: |
           set -euo pipefail
-          nix --version
-          echo "::group::nix flake update"
           nix flake update
-          echo "::endgroup::"
           git --no-pager diff --stat -- flake.lock || true
-
-      # Evaluate-only gate: the test jobs build and run the real artifacts, so this
-      # step must not duplicate their work.
-      - name: "Check flake outputs"
+      - name: "Evaluate against today's fleet"
         run: nix flake check --no-build -L --show-trace
 
   list:
@@ -313,7 +312,17 @@ jobs:
         run: |
           set -euo pipefail
           command -v jq >/dev/null || { echo "jq is missing from the runner image" >&2; exit 1; }
-          command -v rg >/dev/null || { echo "ripgrep is missing from the runner image" >&2; exit 1; }
+
+          # Measured: ripgrep is NOT on the ubuntu image either (job 138861088165's
+          # successor died with "ripgrep is missing from the runner image"). The musl
+          # binary is 2.5 MB and static, so it needs no apt and no store closure.
+          if ! command -v rg >/dev/null; then
+            curl -fsSL --retry 3 \
+              https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
+              | tar -xz -C /tmp ./ripgrep-14.1.1-x86_64-unknown-linux-musl/rg
+            sudo install -m 0755 /tmp/ripgrep-14.1.1-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          fi
+          rg --version | head -1
 
           # Matrix values come from filenames, so they are read from the environment,
           # never spliced into the script text.
