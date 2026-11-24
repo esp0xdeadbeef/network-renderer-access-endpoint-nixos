@@ -24,6 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/test-${TEST_NAME}-XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# `nix eval` captures below go through tests/lib/nix-json.sh: stderr is
+# diagnostics, never the document. A merged `2>&1` capture hands jq the
+# "copying path ..." progress line and reports it as a parse error, which is
+# an environment fact (cold store) masquerading as a renderer defect.
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nix-json.sh"
+
 PASS=0
 FAIL=0
 
@@ -482,7 +489,7 @@ in
 { containers = builtins.length (builtins.attrNames (result.containers or { })); }
 NIXEOF
 
-  SN1_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn1-recovery.nix" 2>&1)"
+  SN1_RECOVERY="$(nix_json "$SCRATCH/sn1-recovery.nix")"
   if echo "$SN1_RECOVERY" | jq -e '.containers > 0' >/dev/null 2>&1; then
     pass "P6 (SN1 recovery) — after removing poisoned endpoint, renderer produces valid output"
   else

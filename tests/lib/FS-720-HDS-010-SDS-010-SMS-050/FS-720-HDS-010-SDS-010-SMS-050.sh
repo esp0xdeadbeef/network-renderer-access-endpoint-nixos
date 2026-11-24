@@ -26,6 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/test-${TEST_NAME}-XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# `nix eval` captures below go through tests/lib/nix-json.sh: stderr is
+# diagnostics, never the document. A merged `2>&1` capture hands jq the
+# "copying path ..." progress line and reports it as a parse error, which is
+# an environment fact (cold store) masquerading as a renderer defect.
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nix-json.sh"
+
 PASS=0
 FAIL=0
 
@@ -409,7 +416,7 @@ in
 }
 NIXEOF
 
-N1_JSON="$(nix eval --impure --json -f "$SCRATCH/seeded-neg-n1.nix" 2>&1)"
+N1_JSON="$(nix_json "$SCRATCH/seeded-neg-n1.nix")"
 if echo "$N1_JSON" | jq -e '.has_violation == true' >/dev/null 2>&1; then
   BNAME="$(echo "$N1_JSON" | jq -r '.checkName')"
   ORIG="$(echo "$N1_JSON" | jq -r '.original')"
@@ -491,7 +498,7 @@ in
 }
 NIXEOF
 
-N2_JSON="$(nix eval --impure --json -f "$SCRATCH/seeded-neg-n2.nix" 2>&1)"
+N2_JSON="$(nix_json "$SCRATCH/seeded-neg-n2.nix")"
 if echo "$N2_JSON" | jq -e '.has_violation == true' >/dev/null 2>&1; then
   BNAME="$(echo "$N2_JSON" | jq -r '.checkName')"
   ADDRS="$(echo "$N2_JSON" | jq -r '.modified_addresses | join(", ")')"

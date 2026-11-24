@@ -753,6 +753,13 @@ echo "=== Behavioral Proof: Nix Evaluation of SMS-041 Guards ==="
 
 REPO_ROOT="${repo_root}"
 SCRATCH="${tmp_dir}/behavioral"
+
+# `nix eval` captures below go through tests/lib/nix-json.sh: stderr is
+# diagnostics, never the document. A merged `2>&1` capture hands jq the
+# "copying path ..." progress line and reports it as a parse error, which is
+# an environment fact (cold store) masquerading as a renderer defect.
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nix-json.sh"
 mkdir -p "${SCRATCH}"
 
 write_nix() {
@@ -782,7 +789,7 @@ in
 }
 NIXEOF
 
-B1_JSON=$(nix eval --impure --json -f "${SCRATCH}/b1-diags.nix" 2>&1) || {
+B1_JSON=$(nix_json "${SCRATCH}/b1-diags.nix") || {
   echo "  FAIL: B1 — nix eval failed: ${B1_JSON}"
   all_checks_passed=false
   B1_JSON="{}"
@@ -857,7 +864,7 @@ in
 }
 NIXEOF
 
-B2_JSON=$(nix eval --impure --json -f "${SCRATCH}/b2-positive.nix" 2>&1) || {
+B2_JSON=$(nix_json "${SCRATCH}/b2-positive.nix") || {
   B2_ERR="${B2_JSON}"
   echo "  FAIL: B2 — renderer evaluation failed: ${B2_ERR}"
   all_checks_passed=false
@@ -891,7 +898,7 @@ in
 }
 NIXEOF
 
-B3_JSON=$(nix eval --impure --json -f "${SCRATCH}/b3-bridge-gaps.nix" 2>&1) || {
+B3_JSON=$(nix_json "${SCRATCH}/b3-bridge-gaps.nix") || {
   echo "  FAIL: B3 — bridge gap verification failed: ${B3_JSON}"
   all_checks_passed=false
   B3_JSON="{}"

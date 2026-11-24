@@ -18,6 +18,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/test-${TEST_NAME}-XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# `nix eval` captures below go through tests/lib/nix-json.sh: stderr is
+# diagnostics, never the document. A merged `2>&1` capture hands jq the
+# "copying path ..." progress line and reports it as a parse error, which is
+# an environment fact (cold store) masquerading as a renderer defect.
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nix-json.sh"
+
 PASS=0
 FAIL=0
 
@@ -363,7 +370,7 @@ let
 in builtins.length lines
 NIXEOF
 
-NSUBNETS="$(nix eval --impure -f "$SCRATCH/count-saddr.nix" 2>&1)"
+NSUBNETS="$(nix_plain "$SCRATCH/count-saddr.nix")"
 if [ "$NSUBNETS" -ge 6 ]; then
   pass "P4b — isolate-bridges blocks $NSUBNETS endpoint subnets from vlan2"
 else
@@ -471,7 +478,7 @@ in
 }
 NIXEOF
 
-P6_JSON="$(nix eval --impure --json -f "$SCRATCH/seeded-neg-p6.nix" 2>&1)"
+P6_JSON="$(nix_json "$SCRATCH/seeded-neg-p6.nix")"
 if echo "$P6_JSON" | jq -e '.has_violation == true' >/dev/null 2>&1; then
   ORIG="$(echo "$P6_JSON" | jq -r '.original_dhcp')"
   MOD="$(echo "$P6_JSON" | jq -r '.modified_dhcp')"
@@ -548,7 +555,7 @@ in
 }
 NIXEOF
 
-P7_JSON="$(nix eval --impure --json -f "$SCRATCH/seeded-neg-p7.nix" 2>&1)"
+P7_JSON="$(nix_json "$SCRATCH/seeded-neg-p7.nix")"
 if echo "$P7_JSON" | jq -e '.has_violation == true' >/dev/null 2>&1; then
   ADDR="$(echo "$P7_JSON" | jq -r '.modified_addresses | join(", ")')"
   pass "P7 — seeded negative: bridge IP injection detected (addr=$ADDR)"
@@ -619,7 +626,7 @@ in
 }
 NIXEOF
 
-P8_JSON="$(nix eval --impure --json -f "$SCRATCH/seeded-neg-p8.nix" 2>&1)"
+P8_JSON="$(nix_json "$SCRATCH/seeded-neg-p8.nix")"
 if echo "$P8_JSON" | jq -e '.has_violation == true' >/dev/null 2>&1; then
   pass "P8 — seeded negative: missing isolate-bridges detected"
 else

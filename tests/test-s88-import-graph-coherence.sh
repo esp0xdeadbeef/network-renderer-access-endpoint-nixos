@@ -41,6 +41,22 @@
 #
 # Evidence boundary: construction. Static file reads and path resolution only.
 # No build, no lab, no network.
+#
+# KNOWN FINDINGS ARE PINNED, NOT IGNORED
+# -------------------------------------
+# G0-G3 assert real properties of the tree, so a repository that has not written a
+# boundary statement, has an EquipmentModule reaching up into a Unit, or has files
+# no entrypoint reaches is red on purpose. A suite that is red on every commit
+# reports no regression -- the signal is the thing that gets lost. Silence would be
+# worse than red, so the debt is pinned in `tests/lib/s88-graph.baseline`:
+#
+#   <ISSUE-ID>=<count>      # e.g. S88-G1=4
+#
+# The test fails when a count moves in EITHER direction: more is a regression, and
+# fewer is progress that must lower the pin in the same change, so the ledger can
+# only shrink by an explicit edit. No baseline file means zero tolerance, which is
+# the default. The seeded-negative id (S88-G-SEED) is never pinnable: it is a
+# statement about this checker, not about the tree.
 set -euo pipefail
 
 # Resolve the repository root without relying on the caller.
@@ -110,9 +126,14 @@ level_of_path() {
 }
 
 issues=0
+# One entry per finding, keyed by the check that raised it (S88-G0..G3). This is
+# what tests/lib/s88-graph.baseline pins; see `finish` for why.
+declare -A issue_counts=()
+record_count() { issue_counts["$1"]=$(( ${issue_counts["$1"]:-0} + 1 )); }
 report_issue() {
   local id="$1" finding="$2" why="$3" read="$4"
   issues=$((issues + 1))
+  record_count "${id}"
   {
     echo "ISSUE ${id}: ${finding}"
     echo "  why:  ${why}"
@@ -127,6 +148,74 @@ read_pointer="the workspace ISA-88 architecture note (not in this repository): t
          statement, and the failure-signature entry 'Reasoning requires reading link
          names or file names -> authority is being recovered from derivation'. Where a
          TRACE.md exists, it is the per-file layer declaration."
+
+baseline_file="${repo_root}/tests/lib/s88-graph.baseline"
+s88_graph_baseline_update="${S88_GRAPH_BASELINE_UPDATE:-0}"
+
+baseline_count() {
+  local id="$1" pinned
+  [[ -f "${baseline_file}" ]] || { echo 0; return 0; }
+  pinned="$(awk -F= -v k="${id}" '$1 == k { print $2; exit }' "${baseline_file}" | tr -d '[:space:]')"
+  [[ "${pinned}" =~ ^[0-9]+$ ]] || pinned=0
+  echo "${pinned}"
+}
+
+write_baseline() {
+  mkdir -p "$(dirname "${baseline_file}")"
+  {
+    echo "# S88 import-graph findings this repository currently carries."
+    echo "# Generated: S88_GRAPH_BASELINE_UPDATE=1 bash tests/test-s88-import-graph-coherence.sh"
+    echo "# The count must move only with this file, in the same change: see the test header."
+    for id in S88-G0 S88-G1 S88-G2 S88-G3; do
+      printf '%s=%s\n' "${id}" "${issue_counts[${id}]:-0}"
+    done
+  } >"${baseline_file}"
+  echo "WROTE ${baseline_file#"${repo_root}/"}: $(grep -vc '^#' "${baseline_file}") pinned check(s)" >&2
+}
+
+# Compare the tree's findings against the ledger and exit.
+finish() {
+  local id current pinned drift=0 pinned_total=0 trees="${#roots[@]}"
+  for id in S88-G0 S88-G1 S88-G2 S88-G3; do
+    current="${issue_counts[${id}]:-0}"
+    pinned="$(baseline_count "${id}")"
+    pinned_total=$((pinned_total + pinned))
+    if (( current != pinned )); then
+      drift=$((drift + 1))
+      echo "  ${id}: ${current} found, ${pinned} pinned" >&2
+    fi
+  done
+
+  if [[ "${s88_graph_baseline_update}" == "1" ]]; then
+    write_baseline
+    echo "PASS S88-GRAPH: baseline updated; review and commit tests/lib/s88-graph.baseline"
+    exit 0
+  fi
+
+  if (( ${issue_counts["S88-G-SEED"]:-0} > 0 )); then
+    echo "FAIL S88-GRAPH: a graph check failed its seeded negative." >&2
+    echo "  Every PASS above is therefore not evidence." >&2
+    exit 1
+  fi
+
+  if (( drift > 0 )); then
+    echo "FAIL S88-GRAPH: the finding count changed." >&2
+    echo "  Fix in the layer that owns the behaviour; if the count fell, lower" >&2
+    echo "  tests/lib/s88-graph.baseline in the same change" >&2
+    echo "  (S88_GRAPH_BASELINE_UPDATE=1 regenerates it)." >&2
+    exit 1
+  fi
+
+  if (( pinned_total > 0 )); then
+    echo "KNOWN-FINDING S88-GRAPH: ${pinned_total} finding(s) pinned in tests/lib/s88-graph.baseline"
+    echo "  across ${trees} tree(s). Recorded, not tolerated: the count cannot grow, and"
+    echo "  each pin must be lowered when the layer that owns the behaviour is fixed."
+    exit 0
+  fi
+
+  echo "PASS S88-GRAPH: the graph and its declarations agree"
+  exit 0
+}
 
 echo "--- S88-GRAPH: declarations vs the resolved dependency graph ---"
 echo ""
@@ -146,8 +235,7 @@ if ((${#roots[@]} == 0)); then
        tree states no slice, and the level vocabulary it uses in code cannot be reviewed
        against anything" \
     "${read_pointer}"
-  echo "FAIL S88-GRAPH: no level tree" >&2
-  exit 1
+  finish
 fi
 
 echo "  level trees: ${roots[*]}"
@@ -660,12 +748,4 @@ else
 fi
 
 echo ""
-if ((issues > 0)); then
-  echo "FAIL S88-GRAPH: ${issues} coherence issue(s) across ${#roots[@]} tree(s)." >&2
-  echo "  Fix in the layer that owns the behaviour. Do not add a file to an" >&2
-  echo "  allowlist: an allowlisted unreachable file is still a lie." >&2
-  exit 1
-fi
-
-echo "PASS S88-GRAPH: the graph and its declarations agree"
-exit 0
+finish

@@ -36,6 +36,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/test-${TEST_NAME}-XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 
+# `nix eval` captures below go through tests/lib/nix-json.sh: stderr is
+# diagnostics, never the document. A merged `2>&1` capture hands jq the
+# "copying path ..." progress line and reports it as a parse error, which is
+# an environment fact (cold store) masquerading as a renderer defect.
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nix-json.sh"
+
 PASS=0
 FAIL=0
 
@@ -339,7 +346,7 @@ in
 }
 NIXEOF
 
-N2_JSON=$(nix eval --impure --json -f "$SCRATCH/seeded-neg-n2.nix" 2>&1) || {
+N2_JSON=$(nix_json "$SCRATCH/seeded-neg-n2.nix") || {
   fail "N2 — module evaluation FAILED: ${N2_JSON}"
   N2_JSON="{}"
 }
@@ -375,7 +382,7 @@ in
 }
 NIXEOF
 
-N3_JSON=$(nix eval --impure --json -f "$SCRATCH/seeded-neg-n3.nix" 2>&1) || {
+N3_JSON=$(nix_json "$SCRATCH/seeded-neg-n3.nix") || {
   fail "N3 — source scan evaluation FAILED: ${N3_JSON}"
   N3_JSON="{}"
 }
@@ -426,16 +433,21 @@ in
 builtins.deepSeq (moduleFn { config = {}; }) "ok"
 NIXEOF
 
+# This case asserts on a THROW, so the message it looks for is on stderr by
+# definition: a `throw` is not a document. Both streams are captured separately
+# so the message is read from the stream that actually carries it, instead of
+# from a merged capture that would also fold in `copying path ...` noise.
 set +e
-N4_OUTPUT=$(nix eval --impure -f "$SCRATCH/seeded-neg-n4.nix" 2>&1)
+nix eval --impure -f "$SCRATCH/seeded-neg-n4.nix" \
+  >"$SCRATCH/seeded-neg-n4.out" 2>"$SCRATCH/seeded-neg-n4.stderr"
 N4_RC=$?
 set -e
 
 if [ "$N4_RC" -ne 0 ]; then
-  if echo "$N4_OUTPUT" | grep -q "HOST_PARTICIPATION_VIOLATION"; then
+  if grep -q "HOST_PARTICIPATION_VIOLATION" "$SCRATCH/seeded-neg-n4.stderr"; then
     pass "N4 — renderer throws HOST_PARTICIPATION_VIOLATION when bridge network has DHCPServer=true (host-side service rejected)"
   else
-    fail "N4 — renderer threw but not with HOST_PARTICIPATION_VIOLATION: $(echo "$N4_OUTPUT" | tail -5)"
+    fail "N4 — renderer threw but not with HOST_PARTICIPATION_VIOLATION: $(tail -5 "$SCRATCH/seeded-neg-n4.stderr")"
   fi
 else
   fail "N4 — renderer accepted bridge network with DHCPServer=true (HOST_PARTICIPATION_VIOLATION not enforced)"

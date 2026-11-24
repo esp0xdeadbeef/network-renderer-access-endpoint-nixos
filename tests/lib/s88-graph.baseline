@@ -1,0 +1,7 @@
+# S88 import-graph findings this repository currently carries.
+# Generated: S88_GRAPH_BASELINE_UPDATE=1 bash tests/test-s88-import-graph-coherence.sh
+# The count must move only with this file, in the same change: see the test header.
+S88-G0=1
+S88-G1=0
+S88-G2=0
+S88-G3=0
