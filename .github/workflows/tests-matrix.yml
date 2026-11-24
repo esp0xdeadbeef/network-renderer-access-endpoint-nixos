@@ -1,0 +1,109 @@
+name: "Tests (matrix)"
+
+# One job per test, generated from the repository's own discovery contract.
+#
+# The per-repository `run-all-tests.sh` files forked into ten variants, each with
+# its own scheduling and exit conventions, so a suite run's shape depended on which
+# repository you were in. A matrix fixes the shape without unifying those files:
+#
+#   list  discovers the entrypoints through `scripts/lib/discover-tests.sh` (the one
+#         file that IS byte-identical everywhere) and emits a JSON matrix;
+#   test  runs exactly one entrypoint per job via `tests/run-one.sh`.
+#
+# Consequences worth stating, because they are the reason for the change:
+#   - fail-fast is a local convenience, not a CI property: `fail-fast: false` here
+#     means one run reports every failure. A local run can still stop early;
+#   - a wedged test occupies one job, not the whole suite;
+#   - a `flake.lock` bump re-runs everything, which is what "bump lock" should do.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  list:
+    name: "list tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      count: ${{ steps.discover.outputs.count }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: discover
+        name: "Discover entrypoints"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/lib/discover-tests.sh ]]; then
+            # shellcheck source=/dev/null
+            source scripts/lib/discover-tests.sh
+            mapfile -t names < <(discover_tests "$PWD")
+          else
+            # A repository without the contract falls back to the naming rule the
+            # contract encodes, so this workflow still works during a migration.
+            mapfile -t names < <(
+              find tests -maxdepth 1 -type f \
+                \( -name 'test-*.sh' -o -name 'test_*.py' \
+                   -o -regex '.*/FS-[0-9]+-HDS-[0-9]+-SDS-[0-9]+-\(SMS\|SIT\)-[0-9a-z][a-z0-9-]*\(-[a-z0-9-]+\)?\.\(sh\|py\)' \) \
+                ! -name 'test.sh' -printf '%f\n' | LC_ALL=C sort
+            )
+          fi
+          count="${#names[@]}"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if ((count == 0)); then
+            echo 'matrix={"test":[]}' >> "$GITHUB_OUTPUT"
+            echo "no entrypoints discovered; the matrix will be empty"
+            exit 0
+          fi
+          json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+          echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+          echo "discovered ${count} entrypoint(s)"
+
+  test:
+    name: "${{ matrix.test }}"
+    needs: list
+    if: needs.list.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      # Not a failure: the shape of a CI run. One red per run means as many runs as
+      # defects, and the whole point of the matrix is that one run reports them all.
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.list.outputs.matrix) }}
+    steps:
+      - name: "Use the runner temp dir for scratch"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in TMPDIR TMP TEMP; do
+            printf '%s=%s\n' "$name" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          done
+      - uses: actions/checkout@v6
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      # The suites shell out to these, and the runner image does not ship them.
+      - name: "Install test dependencies"
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix profile install --accept-flake-config \
+            nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
+          printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+
+      - name: "Run ${{ matrix.test }}"
+        shell: bash
+        env:
+          NETWORK_REPO_DIRECT_TEST_OK: "1"
+        run: bash tests/run-one.sh "tests/${{ matrix.test }}"
