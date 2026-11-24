@@ -43,6 +43,8 @@ jobs:
     outputs:
       matrix: ${{ steps.discover.outputs.matrix }}
       count: ${{ steps.discover.outputs.count }}
+      shards: ${{ steps.discover.outputs.shards }}
+      shard_size: ${{ steps.discover.outputs.shard_size }}
     steps:
       - uses: actions/checkout@v6
       - id: discover
@@ -67,16 +69,27 @@ jobs:
           count="${#names[@]}"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
           if ((count == 0)); then
-            echo 'matrix={"test":[]}' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"shard":[]}' >> "$GITHUB_OUTPUT"
             echo "no entrypoints discovered; the matrix will be empty"
             exit 0
           fi
-          json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+          # GitHub caps a matrix at 256 jobs. One job per test therefore breaks on
+          # the largest repositories here -- measured: 287 entrypoints in the
+          # control-plane model and 486 in network-labs, whose runs failed with
+          # "matrix ... exceeds the maximum" before a single test started. The
+          # matrix is shards instead, and each shard runs a slice of the same
+          # sorted discovery list, so the assignment is deterministic.
+          shard_size="${TEST_SHARD_SIZE:-8}"
+          shards=$(( (count + shard_size - 1) / shard_size ))
+          ((shards > 256)) && shards=256
+          echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+          echo "shard_size=${shard_size}" >> "$GITHUB_OUTPUT"
+          json="$(python3 -c "import json;print(json.dumps({'shard':list(range(${shards}))}))")"
           echo "matrix=${json}" >> "$GITHUB_OUTPUT"
-          echo "discovered ${count} entrypoint(s)"
+          echo "discovered ${count} entrypoint(s) in ${shards} shard(s) of up to ${shard_size}"
 
   test:
-    name: "${{ matrix.test }}"
+    name: "shard ${{ matrix.shard }}"
     needs: list
     if: needs.list.outputs.count != '0'
     runs-on: ubuntu-latest
@@ -108,9 +121,12 @@ jobs:
             nixpkgs#ripgrep nixpkgs#jq nixpkgs#sops nixpkgs#yq
           printf '%s\n' "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
 
-      - name: "Run ${{ matrix.test }}"
+      - name: "Run shard ${{ matrix.shard }}"
         shell: bash
         env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.list.outputs.shards }}
+          SHARD_SIZE: ${{ needs.list.outputs.shard_size }}
           NETWORK_REPO_DIRECT_TEST_OK: "1"
           # tests/test-s88-ci-gate.sh reads the last CI run; without a token it
           # fails closed inside CI (auth missing is a defect there, not an
@@ -122,4 +138,32 @@ jobs:
           # fork's token cannot read the base repository's history. Explicit off is
           # recorded as skipped, never as passed.
           S88_CI_GATE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork && 'off' || 'on' }}
-        run: bash tests/run-one.sh "tests/${{ matrix.test }}"
+        run: |
+          set -uo pipefail
+          # The same discovery and the same sort as the list job, so shard N owns
+          # exactly the tests it was counted for: index % shards == N.
+          if [[ -f scripts/lib/discover-tests.sh ]]; then
+            # shellcheck source=/dev/null
+            source scripts/lib/discover-tests.sh
+            mapfile -t names < <(discover_tests "$PWD")
+          else
+            mapfile -t names < <(
+              find tests -maxdepth 1 -type f \
+                \( -name 'test-*.sh' -o -name 'test_*.py' \
+                   -o -regex '.*/FS-[0-9]+-HDS-[0-9]+-SDS-[0-9]+-\(SMS\|SIT\)-[0-9a-z][a-z0-9-]*\(-[a-z0-9-]+\)?\.\(sh\|py\)' \) \
+                ! -name 'test.sh' -printf '%f\n' | LC_ALL=C sort
+            )
+          fi
+          mine=()
+          for i in "${!names[@]}"; do
+            (( i % SHARDS == SHARD )) && mine+=("tests/${names[$i]}")
+          done
+          printf 'shard %s/%s runs %s test(s)\n' "${SHARD}" "${SHARDS}" "${#mine[@]}"
+          failures=0
+          for test_path in "${mine[@]}"; do
+            if ! bash tests/run-one.sh "${test_path}"; then
+              failures=$((failures + 1))
+            fi
+          done
+          printf 'shard %s/%s: %s of %s failed\n' "${SHARD}" "${SHARDS}" "${failures}" "${#mine[@]}"
+          (( failures == 0 )) || exit 1
