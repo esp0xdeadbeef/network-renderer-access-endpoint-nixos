@@ -92,7 +92,6 @@ jobs:
   list:
     name: "list tests"
     needs: flake-check
-    name: "list tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
