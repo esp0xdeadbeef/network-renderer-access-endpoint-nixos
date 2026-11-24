@@ -22,8 +22,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only, and deliberately so: a pull_request from a same-repository branch runs
+# THAT branch's workflow file, so a token with any write scope would be reachable by
+# the code under test. `contents: read` covers checkout; `actions: read` is what
+# `gh run list` in tests/test-s88-ci-gate.sh needs. Never add write scopes here.
+# Fork pull requests get a read-only token and no secrets from GitHub itself.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -108,6 +114,12 @@ jobs:
           NETWORK_REPO_DIRECT_TEST_OK: "1"
           # tests/test-s88-ci-gate.sh reads the last CI run; without a token it
           # fails closed inside CI (auth missing is a defect there, not an
-          # environment fact), so the matrix job hands it one.
+          # environment fact), so the matrix job hands it one. Read-only: see the
+          # permissions block above.
           GH_TOKEN: ${{ github.token }}
+          # Off for a fork pull request: the gate asks "is main green before we
+          # start", which is not a question an untrusted branch can answer, and a
+          # fork's token cannot read the base repository's history. Explicit off is
+          # recorded as skipped, never as passed.
+          S88_CI_GATE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork && 'off' || 'on' }}
         run: bash tests/run-one.sh "tests/${{ matrix.test }}"
