@@ -529,15 +529,20 @@ jobs:
             # The derivation comes from the program string's context, not from
             # `nix eval --raw .program`, which fails with "the string is not the right
             # placeholder for this derivation output" -- also measured.
-            APP="${app}" REPO="${PWD}" nix eval --impure --raw --expr '
-              let
-                flake = builtins.getFlake ("path:" + builtins.getEnv "REPO");
-                program = flake.apps.${builtins.currentSystem}.${builtins.getEnv "APP"}.program;
-              in
-              builtins.head (builtins.filter
-                (n: builtins.match ".*\\.drv" n != null)
-                (builtins.attrNames (builtins.getContext program)))
-            ' > "${RUNNER_TEMP}/app-drv.txt" || {
+            # `builtins.getFlake "path:$PWD"` reads the files as a plain directory and
+            # sets no revision, while the tests run `nix run "$ROOT#<app>"` on a git
+            # checkout. The apps bake `self.sourceInfo` into themselves, so the two
+            # spellings produce DIFFERENT derivations -- measured: the warm job built
+            # q98iidds...-app.drv and the test then built x0miqdjk...-app.drv from source
+            # (run 45529713443). Warming the wrong derivation is the same outcome as not
+            # warming: the test substitutes the whole toolchain, and with no network that
+            # means it fails.
+            #
+            # So the warm step asks for the app the way a test does: through the flake
+            # reference, from the repository root.
+            nix eval --raw "${PWD}#apps.${system}.${app}.program" \
+              --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' \
+              > "${RUNNER_TEMP}/app-drv.txt" || {
               echo "::error::${app}: its program is not produced by a derivation"
               exit 1
             }
