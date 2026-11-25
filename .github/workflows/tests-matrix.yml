@@ -186,6 +186,14 @@ jobs:
           sudo mkdir -p /nix
           sudo chown -R "$(id -u):$(id -g)" /nix
 
+      # The tools this job installs, cached apart from /nix: ripgrep is 2.5 MB and
+      # identical for every job, and a cache hit turns its download into a no-op.
+      - uses: actions/cache@v4
+        id: toolcache
+        with:
+          path: /home/runner/.local/bin
+          key: tools-${{ runner.os }}-rg-14.1.1
+
       - uses: actions/cache@v4
         id: nixcache
         with:
@@ -636,16 +644,20 @@ jobs:
           # Measured: ripgrep is NOT on the ubuntu image either (job 138861088165's
           # successor died with "ripgrep is missing from the runner image"). The musl
           # binary is 2.5 MB and static, so it needs no apt and no store closure.
-          if ! command -v rg >/dev/null; then
+          # ripgrep is 2.5 MB and the same bytes for every job, so it lives in a
+          # cached directory instead of being downloaded 288 times per sweep.
+          if [[ ! -x "${HOME}/.local/bin/rg" ]] && ! command -v rg >/dev/null; then
             # The archive has no "./" prefix on its members; asking tar for
             # "./ripgrep-.../rg" fails with "Not found in archive".
+            mkdir -p "${HOME}/.local/bin"
             rg_unpack="$(mktemp -d)"
             curl -fsSL --retry 3 \
               https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
               | tar -xz -C "${rg_unpack}" --strip-components=1 \
                   "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg"
-            sudo install -m 0755 "${rg_unpack}/rg" /usr/local/bin/rg
+            install -m 0755 "${rg_unpack}/rg" "${HOME}/.local/bin/rg"
           fi
+          printf '%s\n' "${HOME}/.local/bin" >> "${GITHUB_PATH}"
           rg --version | head -1
 
           # Matrix values come from filenames, so they are read from the environment,
