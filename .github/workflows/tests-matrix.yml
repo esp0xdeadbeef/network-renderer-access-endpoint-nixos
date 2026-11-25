@@ -731,6 +731,56 @@ jobs:
           fi
 
 
+      # THE PICNED INPUT'S OWN APP, BUILT.
+      #
+      # The provenance test runs `nix flake archive "path:${repo_root}"`, whose
+      # `network-labs` entry pins ITS OWN network-compiler at 5a8682f. Archiving labs'
+      # sources is not enough: evaluating through that revision needs that revision's
+      # closure, and the build that failed was 8plxzydy...-app.drv, which matches none
+      # of this repository's apps.
+      #
+      # Measured locally: the pinned revision's compile app resolves to
+      # mx20bd9g...-app.drv -- a genuinely different derivation from this
+      # repository's. So each pinned revision is warmed for the app the tests run,
+      # with a lock supplied when the revision ships none.
+      - name: "Warm the pinned compilers the tests evaluate through"
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [[ ! -s "${RUNNER_TEMP}/ref-paths.tsv" ]]; then
+            echo "no prefetched refs recorded; nothing to warm"
+            exit 0
+          fi
+          system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          : > "${RUNNER_TEMP}/pinned-paths.txt"
+          while IFS=$'\t' read -r ref src_path; do
+            [[ -n "${ref}" && -n "${src_path}" ]] || continue
+            [[ "${ref}" == github:esp0xdeadbeef/network-compiler/* ]] || continue
+            echo "::group::pinned compiler app ${ref}"
+            work="${RUNNER_TEMP}/pinned/$(echo "${ref}" | tr '/:' '__')"
+            rm -rf "${work}"
+            mkdir -p "$(dirname "${work}")"
+            cp -r "${src_path}" "${work}"
+            chmod -R u+w "${work}"
+            if [[ ! -f "${work}/flake.lock" && -f flake.lock ]]; then
+              cp flake.lock "${work}/flake.lock"
+            fi
+            pinned_prog="$(nix eval --raw --impure "path:${work}#apps.${system_name}.compile.program" 2>/dev/null)" || pinned_prog=""
+            if [[ -n "${pinned_prog}" ]] && nix build --no-link "${pinned_prog}" > /dev/null 2>&1; then
+              echo "PASS WARM-PINNED-APP: ${ref} -> ${pinned_prog}"
+              nix-store -qR "${pinned_prog}" >> "${RUNNER_TEMP}/pinned-paths.txt" 2>/dev/null || true
+            else
+              echo "::warning::pinned compiler app for ${ref} could not be built"
+            fi
+            echo "::endgroup::"
+          done < "${RUNNER_TEMP}/ref-paths.tsv"
+          if [[ -s "${RUNNER_TEMP}/pinned-paths.txt" ]]; then
+            sort -u -o "${RUNNER_TEMP}/pinned-paths.txt" "${RUNNER_TEMP}/pinned-paths.txt"
+            cat "${RUNNER_TEMP}/pinned-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
+            printf 'pinned app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/pinned-paths.txt")"
+          fi
+
+
   test:
     name: "${{ matrix.test || format('shard {0}', matrix.shard) }}"
     needs: list
