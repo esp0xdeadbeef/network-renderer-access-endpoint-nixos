@@ -632,10 +632,26 @@ jobs:
               [[ "${ref}" == github:esp0xdeadbeef/* ]] || continue
               echo "::group::warm apps of ${ref}"
               system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-              if nix eval --json "${ref}#apps.${system_name}" > "${RUNNER_TEMP}/sib-apps.json" 2>/dev/null; then
+              # A PINNED REVISION CAN HAVE NO flake.lock. Measured on
+              # network-compiler@5a8682f: three repositories gitignore flake.lock, so that
+              # revision ships none, and evaluating it fails "while updating the lock
+              # file" -- which needs the network the closed store refuses. The source is
+              # copied out of the store (Nix will not write into a store path) and given
+              # this repository's lock, whose pins the warm job has already materialised.
+              sib_src="$(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
+              sib_dir="${RUNNER_TEMP}/sib-src/$(echo "${ref}" | tr '/:' '__')"
+              rm -rf "${sib_dir}"
+              mkdir -p "$(dirname "${sib_dir}")"
+              cp -r "${sib_src}" "${sib_dir}"
+              chmod -R u+w "${sib_dir}"
+              if [[ ! -f "${sib_dir}/flake.lock" && -f flake.lock ]]; then
+                cp flake.lock "${sib_dir}/flake.lock"
+                echo "supplied this repository's lock: ${ref} ships none"
+              fi
+              if nix eval --json "path:${sib_dir}#apps.${system_name}" > "${RUNNER_TEMP}/sib-apps.json" 2>/dev/null; then
                 while read -r sib_app; do
                   [[ -n "${sib_app}" ]] || continue
-                  sib_drv="$(nix eval --raw "${ref}#apps.${system_name}.${sib_app}.program" \
+                  sib_drv="$(nix eval --raw "path:${sib_dir}#apps.${system_name}.${sib_app}.program" \
                     --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
                   nix-store -r --add-root "${RUNNER_TEMP}/sib-roots/${sib_app}" "${sib_drv}" > /dev/null 2>&1 || {
                     echo "::warning::${ref} app ${sib_app} did not build; if a test needs it, that test will say so"
