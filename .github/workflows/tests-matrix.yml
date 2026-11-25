@@ -522,7 +522,26 @@ jobs:
           # make visible. A warm that cannot build is red here, once.
           for app in "${apps[@]}"; do
             echo "::group::warm app ${app}"
-            nix build --no-link --print-out-paths ".#apps.${system}.${app}.program" || {
+            # `nix build --print-out-paths <drv>` is NOT the tool: given a .drv it prints
+            # the .drv back (measured), so nothing that the tests execute ends up in the
+            # store. `nix-store -r` builds the derivation and prints what it produces.
+            #
+            # The derivation comes from the program string's context, not from
+            # `nix eval --raw .program`, which fails with "the string is not the right
+            # placeholder for this derivation output" -- also measured.
+            APP="${app}" REPO="${PWD}" nix eval --impure --raw --expr '
+              let
+                flake = builtins.getFlake ("path:" + builtins.getEnv "REPO");
+                program = flake.apps.${builtins.currentSystem}.${builtins.getEnv "APP"}.program;
+              in
+              builtins.head (builtins.filter
+                (n: builtins.match ".*\\.drv" n != null)
+                (builtins.attrNames (builtins.getContext program)))
+            ' > "${RUNNER_TEMP}/app-drv.txt" || {
+              echo "::error::${app}: its program is not produced by a derivation"
+              exit 1
+            }
+            nix-store -r "$(cat "${RUNNER_TEMP}/app-drv.txt")" > /dev/null || {
               echo "::error::warm ${app} failed to build; the test jobs would substitute it"
               exit 1
             }
