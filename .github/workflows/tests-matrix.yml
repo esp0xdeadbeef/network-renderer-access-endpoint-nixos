@@ -833,43 +833,49 @@ jobs:
           fi
           nix --version
 
-      # WARM THIS JOB'S OWN APP, IN THIS JOB'S OWN TREE.
+      # WARM THIS JOB'S OWN APP, AND THE VARIANT ROOT WILL ASK FOR.
       #
-      # The app derivation is a function of `self.sourceInfo`, which is a hash of the
-      # whole tree INCLUDING .git: measured, adding a file under .git changes it --
+      # The app derivation is computed from the flake source, and the test computes it
+      # AS ROOT inside `sudo -n env PATH=... unshare -n`. Nix's path-flake source
+      # resolution depends on the caller, so the runner-user warm and the root test can
+      # resolve different derivations. Measured every run: warm resolved
+      # jvsrqvn2...-app.drv, the test wanted c9yljzlz...-app.drv (runs 45559663953,
+      # 45563403679, 45568182996), with sourceInfo, .git, untracked files and cwd all
+      # ruled out in that order.
       #
-      #   g1  "/nix/store/lymiyvhd...-source"
-      #   g2  "/nix/store/wiq5m0p6...-source"   (one extra file in .git)
-      #
-      # and two jobs of the same run have different .git contents, because checkout,
-      # fetch and cache steps differ. Measured on run 45556225708, same commit, both
-      # worktrees clean:
-      #
-      #   list job sourceInfo  /nix/store/94x6gy6948sgw0cnbcv8za8cvdyxpia0-source
-      #   test job sourceInfo  /nix/store/69ywzxv3gdgyk19n0zk6a9pg1rx8s86h-source
-      #   list built  bkj9a41v...-app.drv / mc4hfgy2...-app.drv
-      #   test wanted l362lbsc...-app.drv   -> built binutils from source, offline, red
-      #
-      # So warming in the list job cannot cover this job: the derivation it names is
-      # for a different tree. This step builds the app HERE, from the closure already
-      # imported, and is a no-op when the path is present. It runs before the store is
-      # closed, which is why the close moved below it.
+      # This step must run BEFORE the store is closed (it builds), but the namespace and
+      # the root identity only exist afterwards. So it does the only thing that is both
+      # possible here and honest: it builds the runner-user variant, then asks ROOT to
+      # resolve its own variant and records it, so the next run says in one line whether
+      # the two differ and by what.
       - name: "Warm this job's own app closure"
         shell: bash
         run: |
           set -uo pipefail
           system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          echo "sourceInfo: $(nix eval --impure --raw --expr "let f = builtins.getFlake \"path:${PWD}\"; in builtins.toJSON (f.sourceInfo or {})" 2>/dev/null)"
-          drv="$(nix eval --raw "${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || {
+          drv="$(nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || drv=""
+          if [[ -z "${drv}" ]]; then
             echo "no compile app derivable here; the tests will say if they need one"
             exit 0
-          }
-          echo "this job's compile app: ${drv}"
+          fi
+          echo "runner-user compile app: ${drv}"
           if nix-store -r "${drv}" > /dev/null 2>&1; then
             echo "PASS WARM-LOCAL: ${drv} is in the store"
           else
-            echo "::warning::${drv} is not in the imported closure; it cannot be built once the store closes"
+            echo "::warning::${drv} is not in the imported closure"
+          fi
+          # Root's answer, recorded now while the network is still available.
+          root_drv="$(sudo -n env "PATH=${PATH}" nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || root_drv=""
+          echo "root's compile app:       ${root_drv:-<unavailable>}"
+          if [[ -n "${root_drv}" && "${root_drv}" != "${drv}" ]]; then
+            echo "the two identities resolve different derivations; building root's"
+            if sudo -n env "PATH=${PATH}" nix-store -r "${root_drv}" > /dev/null 2>&1; then
+              echo "PASS WARM-LOCAL-ROOT: ${root_drv} is in the store"
+            else
+              echo "::warning::root's variant ${root_drv} could not be built"
+            fi
           fi
 
       # THE STORE IS CLOSED FROM HERE DOWN.
