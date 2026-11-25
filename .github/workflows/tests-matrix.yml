@@ -202,15 +202,40 @@ jobs:
           nix_conf: |
             experimental-features = nix-command flakes
 
-      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      # On a hit there was no installer to run, so `nix` is on disk but neither on
+      # PATH nor reachable through the profile symlink the installer creates in
+      # $HOME: nix-quick-install appends `$HOME/.nix-profile/bin`, and that symlink
+      # lives outside /nix, so the cache does not carry it.
       - if: steps.nixcache.outputs.cache-hit == 'true'
-        name: "Nix is on PATH (restored)"
+        name: "Put the restored Nix on PATH"
         shell: bash
-        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        run: |
+          set -euo pipefail
+          mkdir -p "/nix/var/nix/profiles/per-user"
+          ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          for candidate in "${HOME}/.nix-profile/bin" \
+                           "/nix/var/nix/profiles/default/bin" \
+                           "/nix/var/nix/profiles/per-user/${USER}/bin"; do
+            [[ -x "${candidate}/nix" ]] && printf '%s\n' "${candidate}" >> "${GITHUB_PATH}"
+          done
+          if ! command -v nix >/dev/null; then
+            # Last resort: the store is what was restored, so the binary is in it.
+            store_nix="$(find /nix/store -maxdepth 3 -name nix -type f -perm -u+x 2>/dev/null | head -1)"
+            if [[ -n "${store_nix}" ]]; then
+              printf '%s\n' "$(dirname "${store_nix}")" >> "${GITHUB_PATH}"
+            fi
+          fi
 
       - name: "Nix is available"
         shell: bash
-        run: nix --version
+        run: |
+          set -euo pipefail
+          if ! command -v nix >/dev/null; then
+            echo "nix was restored but is not on PATH; /nix/var/nix/profiles:" >&2
+            ls -la /nix/var/nix/profiles /nix/var/nix/profiles/per-user 2>&1 | sed 's/^/  /' >&2
+            exit 1
+          fi
+          nix --version
 
       # The pins the commit SHIPS. This is the blocking gate: a commit that does not
       # evaluate with its own lock is not a commit whose tests mean anything.
@@ -272,15 +297,40 @@ jobs:
           nix_conf: |
             experimental-features = nix-command flakes
 
-      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      # On a hit there was no installer to run, so `nix` is on disk but neither on
+      # PATH nor reachable through the profile symlink the installer creates in
+      # $HOME: nix-quick-install appends `$HOME/.nix-profile/bin`, and that symlink
+      # lives outside /nix, so the cache does not carry it.
       - if: steps.nixcache.outputs.cache-hit == 'true'
-        name: "Nix is on PATH (restored)"
+        name: "Put the restored Nix on PATH"
         shell: bash
-        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        run: |
+          set -euo pipefail
+          mkdir -p "/nix/var/nix/profiles/per-user"
+          ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          for candidate in "${HOME}/.nix-profile/bin" \
+                           "/nix/var/nix/profiles/default/bin" \
+                           "/nix/var/nix/profiles/per-user/${USER}/bin"; do
+            [[ -x "${candidate}/nix" ]] && printf '%s\n' "${candidate}" >> "${GITHUB_PATH}"
+          done
+          if ! command -v nix >/dev/null; then
+            # Last resort: the store is what was restored, so the binary is in it.
+            store_nix="$(find /nix/store -maxdepth 3 -name nix -type f -perm -u+x 2>/dev/null | head -1)"
+            if [[ -n "${store_nix}" ]]; then
+              printf '%s\n' "$(dirname "${store_nix}")" >> "${GITHUB_PATH}"
+            fi
+          fi
 
       - name: "Nix is available"
         shell: bash
-        run: nix --version
+        run: |
+          set -euo pipefail
+          if ! command -v nix >/dev/null; then
+            echo "nix was restored but is not on PATH; /nix/var/nix/profiles:" >&2
+            ls -la /nix/var/nix/profiles /nix/var/nix/profiles/per-user 2>&1 | sed 's/^/  /' >&2
+            exit 1
+          fi
+          nix --version
       - name: "Refresh the pins"
         shell: bash
         run: |
@@ -292,7 +342,13 @@ jobs:
 
   list:
     name: "list tests"
-    needs: flake-check
+    # BOTH flake jobs, in order, before a single test is scheduled: the gate that
+    # evaluates the committed pins and the drift report that evaluates today's. They
+    # were parallel because drift is `continue-on-error` -- which controls whether a
+    # FAILURE stops dependants, not whether they WAIT. A test run that starts while
+    # the drift check is still resolving is a test run against two different input
+    # sets, and that is the thing this whole workflow exists to prevent.
+    needs: [flake-check, flake-drift]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -411,15 +467,40 @@ jobs:
           nix_conf: |
             experimental-features = nix-command flakes
 
-      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      # On a hit there was no installer to run, so `nix` is on disk but neither on
+      # PATH nor reachable through the profile symlink the installer creates in
+      # $HOME: nix-quick-install appends `$HOME/.nix-profile/bin`, and that symlink
+      # lives outside /nix, so the cache does not carry it.
       - if: steps.nixcache.outputs.cache-hit == 'true'
-        name: "Nix is on PATH (restored)"
+        name: "Put the restored Nix on PATH"
         shell: bash
-        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        run: |
+          set -euo pipefail
+          mkdir -p "/nix/var/nix/profiles/per-user"
+          ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          for candidate in "${HOME}/.nix-profile/bin" \
+                           "/nix/var/nix/profiles/default/bin" \
+                           "/nix/var/nix/profiles/per-user/${USER}/bin"; do
+            [[ -x "${candidate}/nix" ]] && printf '%s\n' "${candidate}" >> "${GITHUB_PATH}"
+          done
+          if ! command -v nix >/dev/null; then
+            # Last resort: the store is what was restored, so the binary is in it.
+            store_nix="$(find /nix/store -maxdepth 3 -name nix -type f -perm -u+x 2>/dev/null | head -1)"
+            if [[ -n "${store_nix}" ]]; then
+              printf '%s\n' "$(dirname "${store_nix}")" >> "${GITHUB_PATH}"
+            fi
+          fi
 
       - name: "Nix is available"
         shell: bash
-        run: nix --version
+        run: |
+          set -euo pipefail
+          if ! command -v nix >/dev/null; then
+            echo "nix was restored but is not on PATH; /nix/var/nix/profiles:" >&2
+            ls -la /nix/var/nix/profiles /nix/var/nix/profiles/per-user 2>&1 | sed 's/^/  /' >&2
+            exit 1
+          fi
+          nix --version
 
       # jq and ripgrep ship with the runner image. sops is 45 MB and yq is 10 MB,
       # and 47 of 1689 test files name sops while 2 name yq -- so they are fetched
