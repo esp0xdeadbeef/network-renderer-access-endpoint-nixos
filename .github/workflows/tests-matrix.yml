@@ -954,6 +954,28 @@ jobs:
             failures=$((failures + 1))
           fi
 
+          # PIN `<nixpkgs>` FOR EVERY TEST IN THIS JOB, FROM THIS REPOSITORY'S LOCK.
+          #
+          # `import <nixpkgs>` resolves through NIX_PATH, and NIX_PATH is not the same
+          # here as on a workstation: CI sets it to the empty string, which is not
+          # "unset" -- the default `nixpkgs=flake:nixpkgs` entry only exists when the
+          # variable is absent. A case using `<nixpkgs>` therefore evaluated a different
+          # nixpkgs in CI and asserted on a different `lib`, green locally and red here
+          # (measured: test-canonical-stage-link-matrix.sh).
+          #
+          # The fleet has 84 such uses across five repositories, so this is fixed once
+          # for the job rather than 84 times: point NIX_PATH at the nixpkgs this
+          # repository's own lock pins. The flake gate already materialised those inputs,
+          # so no fetch is implied.
+          if nix_path_pin="$(nix eval --raw --impure --expr \
+               "(builtins.getFlake \"path:${PWD}\").inputs.nixpkgs.outPath" 2>/dev/null)" \
+             && [[ -n "${nix_path_pin}" ]]; then
+            printf 'NIX_PATH=nixpkgs=%s\n' "${nix_path_pin}" >> "$GITHUB_ENV"
+            echo "PASS CACHE-NIXPATH: <nixpkgs> pinned to ${nix_path_pin}"
+          else
+            echo "::warning::could not read the nixpkgs pin; <nixpkgs> will use the ambient NIX_PATH"
+          fi
+
           if (( failures != 0 )); then
             echo "::error::CACHE: ${failures} item(s) missing; the test failures below would be cache artefacts, not defects"
             exit 1
