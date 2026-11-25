@@ -170,10 +170,31 @@ jobs:
       # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
       # the multi-user installer (users, systemd units, /etc/nix) in every job; the
       # suites need `nix eval` and a store, not a daemon.
-      - uses: nixbuild/nix-quick-install-action@v35
+      # Everything Nix needs, cached on GitHub's side and keyed by the lock.
+      #
+      # /nix holds the installed Nix, every store path the suite has ever needed, and
+      # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
+      # for the same pins restores a warm tree instead of installing Nix and
+      # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      - uses: actions/cache@v4
+        id: nixcache
+        with:
+          path: |
+            /nix
+            /home/runner/.cache/nix
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            nix-${{ runner.os }}-
+
+      - if: steps.nixcache.outputs.cache-hit != 'true'
+        uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      - name: "Nix is available"
+        shell: bash
+        run: nix --version
 
       # The pins the commit SHIPS. This is the blocking gate: a commit that does not
       # evaluate with its own lock is not a commit whose tests mean anything.
@@ -189,7 +210,8 @@ jobs:
   # every push -- the alternative is a nightly bumper discovering it a day later --
   # but it must not stop 288 test jobs that test the commit under review.
   flake-drift:
-    name: "nix flake check (today's pins)"
+    # Named so it cannot be mistaken for the gate: this one is a report.
+    name: "flake drift (today's pins, report only)"
     needs: workflow-structure
     continue-on-error: true
     runs-on: ubuntu-latest
@@ -202,10 +224,31 @@ jobs:
       # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
       # the multi-user installer (users, systemd units, /etc/nix) in every job; the
       # suites need `nix eval` and a store, not a daemon.
-      - uses: nixbuild/nix-quick-install-action@v35
+      # Everything Nix needs, cached on GitHub's side and keyed by the lock.
+      #
+      # /nix holds the installed Nix, every store path the suite has ever needed, and
+      # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
+      # for the same pins restores a warm tree instead of installing Nix and
+      # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      - uses: actions/cache@v4
+        id: nixcache
+        with:
+          path: |
+            /nix
+            /home/runner/.cache/nix
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            nix-${{ runner.os }}-
+
+      - if: steps.nixcache.outputs.cache-hit != 'true'
+        uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      - name: "Nix is available"
+        shell: bash
+        run: nix --version
       - name: "Refresh the pins"
         shell: bash
         run: |
@@ -304,10 +347,31 @@ jobs:
       # cachix/install-nix-action: that one downloads the 26 MB Nix tarball and runs
       # the multi-user installer (users, systemd units, /etc/nix) in every job; the
       # suites need `nix eval` and a store, not a daemon.
-      - uses: nixbuild/nix-quick-install-action@v35
+      # Everything Nix needs, cached on GitHub's side and keyed by the lock.
+      #
+      # /nix holds the installed Nix, every store path the suite has ever needed, and
+      # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
+      # for the same pins restores a warm tree instead of installing Nix and
+      # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      - uses: actions/cache@v4
+        id: nixcache
+        with:
+          path: |
+            /nix
+            /home/runner/.cache/nix
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-keys: |
+            nix-${{ runner.os }}-
+
+      - if: steps.nixcache.outputs.cache-hit != 'true'
+        uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      - name: "Nix is available"
+        shell: bash
+        run: nix --version
 
       # jq and ripgrep ship with the runner image. sops is 45 MB and yq is 10 MB,
       # and 47 of 1689 test files name sops while 2 name yq -- so they are fetched
@@ -329,10 +393,14 @@ jobs:
           # successor died with "ripgrep is missing from the runner image"). The musl
           # binary is 2.5 MB and static, so it needs no apt and no store closure.
           if ! command -v rg >/dev/null; then
+            # The archive has no "./" prefix on its members; asking tar for
+            # "./ripgrep-.../rg" fails with "Not found in archive".
+            rg_unpack="$(mktemp -d)"
             curl -fsSL --retry 3 \
               https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
-              | tar -xz -C /tmp ./ripgrep-14.1.1-x86_64-unknown-linux-musl/rg
-            sudo install -m 0755 /tmp/ripgrep-14.1.1-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+              | tar -xz -C "${rg_unpack}" --strip-components=1 \
+                  "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg"
+            sudo install -m 0755 "${rg_unpack}/rg" /usr/local/bin/rg
           fi
           rg --version | head -1
 
