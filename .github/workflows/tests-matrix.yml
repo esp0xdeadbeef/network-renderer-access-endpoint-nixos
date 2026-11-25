@@ -833,21 +833,19 @@ jobs:
           fi
           nix --version
 
-      # WARM THIS JOB'S OWN APP, AND THE VARIANT ROOT WILL ASK FOR.
+      # WARM THIS JOB'S OWN APP -- AND AGAIN INSIDE THE NAMESPACE.
       #
       # The app derivation is computed from the flake source, and the test computes it
-      # AS ROOT inside `sudo -n env PATH=... unshare -n`. Nix's path-flake source
-      # resolution depends on the caller, so the runner-user warm and the root test can
-      # resolve different derivations. Measured every run: warm resolved
-      # jvsrqvn2...-app.drv, the test wanted c9yljzlz...-app.drv (runs 45559663953,
-      # 45563403679, 45568182996), with sourceInfo, .git, untracked files and cwd all
-      # ruled out in that order.
+      # as ROOT inside `sudo -n env PATH=... unshare -n`. Three runs measured a
+      # different derivation on each side (5vjl2hf8 / 2k7kmfb3, 9i2w9a93 / ni3s22q5),
+      # and every locally-reproducible explanation was ruled out: .git, untracked
+      # files, cwd, a foreign git repo, HOME, XDG_CACHE_HOME, safe.directory, and
+      # --impure with --no-warn-dirty all give the same drv here.
       #
-      # This step must run BEFORE the store is closed (it builds), but the namespace and
-      # the root identity only exist afterwards. So it does the only thing that is both
-      # possible here and honest: it builds the runner-user variant, then asks ROOT to
-      # resolve its own variant and records it, so the next run says in one line whether
-      # the two differ and by what.
+      # So this step does what can be verified: it warms from the runner identity,
+      # BEFORE the store closes so the network is available. The step AFTER the store
+      # closes then asks the same question as root inside the namespace and reports
+      # whether the two agree, which is the one fact the logs have not yet stated.
       - name: "Warm this job's own app closure"
         shell: bash
         run: |
@@ -860,48 +858,13 @@ jobs:
             exit 0
           fi
           echo "runner-user compile app: ${drv}"
-          # WARM THE WHOLE BUILD CLOSURE, NOT JUST THE OUTPUT.
-          #
-          # `nix-store -r <drv>` builds that derivation and what it references at
-          # RUNTIME. The app that gets rebuilt during the test is the same derivation,
-          # but the closure that fails is the one under `pkgs.nix`'s test dependencies
-          # (aeson, ShellCheck, binutils from ftpmirror) -- build-time inputs of the
-          # nix package this app puts on PATH. Fetching the output alone leaves those
-          # unbuilt, so the test rebuilds them and the closed store refuses
-          # (run 45578196767: 2k7kmfb3...-app.drv).
-          #
-          # `nix build` resolves the full build closure, which is exactly what has to
-          # be present before the store closes.
-          if nix-store -r "${drv}" > /dev/null 2>&1; then
-            echo "PASS WARM-LOCAL: ${drv} is in the store"
-          else
-            echo "::warning::${drv} is not in the imported closure"
-          fi
-          # `nix build ".#apps.<sys>.<name>"` is the ORIGINAL bug in this workflow and
-          # still fails: an app is `{ type = "app"; program = ...; }`, not a derivation.
-          # What pulls BUILD-time dependencies is building the program path itself,
-          # which carries the output context into a realisable store path. `nix-store -r`
-          # on the .drv builds only its runtime references, which is why the nix package
-          # this app puts on PATH still had an unbuilt test/aeson/ShellCheck closure at
-          # run time (run 45578196767).
           prog="$(nix eval --raw "${PWD}#apps.${system}.compile.program" 2>/dev/null)" || prog=""
           if [[ -n "${prog}" ]] && nix build --no-link "${prog}" > /dev/null 2>&1; then
             echo "PASS WARM-LOCAL-DEPS: build closure of ${prog} is present"
           else
             echo "::warning::the build closure of ${drv} could not be completed"
           fi
-          # Root's answer, recorded now while the network is still available.
-          root_drv="$(sudo -n env "PATH=${PATH}" nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || root_drv=""
-          echo "root's compile app:       ${root_drv:-<unavailable>}"
-          if [[ -n "${root_drv}" && "${root_drv}" != "${drv}" ]]; then
-            echo "the two identities resolve different derivations; building root's"
-            if sudo -n env "PATH=${PATH}" nix-store -r "${root_drv}" > /dev/null 2>&1; then
-              echo "PASS WARM-LOCAL-ROOT: ${root_drv} is in the store"
-            else
-              echo "::warning::root's variant ${root_drv} could not be built"
-            fi
-          fi
+          printf '%s\n' "${drv}" > "${RUNNER_TEMP}/warmed-drv.txt"
 
       # THE STORE IS CLOSED FROM HERE DOWN.
       #
@@ -1095,6 +1058,165 @@ jobs:
       # Recorded, not required: a repository whose tests do not run inside a container
       # still gets the namespace. When podman is usable, NIX_CONTAINER_NETNS names the
       # command the run step should wrap tests in, and the probe below prefers it.
+      # ROOT'S ANSWER, STATED IN THE LOG.
+      #
+      # This runs after the store is closed, so it cannot build anything -- it only
+      # resolves, offline, the derivation root will ask for, and prints it beside the
+      # one the warm built. If they differ, this line says so before the test fails,
+      # which turns the next run's log into the evidence that has been missing.
+      # `--offline` is a FLAG, not a setting, and the suites shell out to bare `nix`
+      # 200+ times (`nix run`, `nix build`, `nix flake archive`) in ways no NIX_CONFIG
+      # can cover. A wrapper on PATH is the only place that catches all of them: every
+      # `nix` invocation becomes `nix --offline <args>` unless the caller already said
+      # `--offline`. With substituters emptied above, a missing path is now an error
+      # that names the path, not a silent download.
+      # A NETWORK NAMESPACE, NOT JUST A FLAG.
+      #
+      # Measured on the runner image: `nix --offline` does NOT block flake INPUT
+      # fetching. A test that runs `nix flake prefetch github:...` reaches the network
+      # even with `--offline` on the command line and empty substituters, because
+      # `--offline` governs substitution, not fetchers. Reproduced:
+      #
+      #   nix --offline flake prefetch github:NixOS/nonexistent-repo-xyz123
+      #   error: unable to download 'https://api.github.com/repos/.../commits/HEAD'
+      #
+      # A 404 from api.github.com is proof the request left the machine. So the test
+      # runs inside a network namespace with no interfaces but loopback, where the
+      # request cannot leave at all and Nix says so itself:
+      #
+      #   warning: you don't have Internet access; disabling some network-dependent
+      #   features
+      #
+      # That warning is the point: enforcement by the kernel, reported by Nix, and
+      # visible in the transcript the assertion below greps.
+      # A NETWORK NAMESPACE, NOT JUST A FLAG.
+      #
+      # Measured: `nix --offline` does NOT block flake INPUT fetching --
+      # `nix --offline flake prefetch github:...` still opens a connection, because
+      # `--offline` governs substitution, not fetchers. So the test runs in a network
+      # namespace, where Nix itself reports
+      #   warning: you don't have Internet access; disabling some network-dependent
+      #   features
+      #
+      # Which namespace a host offers is a property of the host, and this fleet already
+      # measured it: tests/lib/nft-netns-check.sh in
+      # network-renderer-containerlab-linux-backend records that a GitHub-hosted
+      # ubuntu-26.04 runner restricts unprivileged user namespaces, so `unshare -Urn`
+      # dies with
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      # while `sudo -n unshare -n` works (the runners give passwordless sudo; the
+      # /nix prepare step already uses it). Same order as that helper: user namespace
+      # first, root namespace second, hard failure if neither -- never a silent pass.
+      - name: "Verify the test can run with no network"
+        shell: bash
+        run: |
+          set -euo pipefail
+          netns=""
+          # `sudo` drops PATH; the suites call `nix`, `jq`, `python3` and `rg` by name, so
+          # the caller's PATH is carried through `env`. Without this the run step failed
+          # with "failed to execute /usr/bin/script: No such file or directory".
+          if unshare -Urn true >/dev/null 2>&1; then
+            netns="unshare -Urn"
+          elif sudo -n env "PATH=${PATH}" unshare -n true >/dev/null 2>&1; then
+            netns="sudo -n env PATH=${PATH} unshare -n"
+          else
+            echo "::error::this host gives no network namespace, so an offline run cannot be verified"
+            exit 1
+          fi
+          # GIT MUST SEE THE REPOSITORY AS ROOT TOO.
+          #
+          # The namespace form that works here is `sudo -n env PATH=... unshare -n`, so
+          # the tests run as root. actions/checkout registers the workspace as a safe
+          # directory for the RUNNER user only, so as root git refuses it --
+          #   fatal: detected dubious ownership in repository at ...
+          # -- and Nix's path-flake dirty detection then differs from the warm step's,
+          # which changes self.sourceInfo and therefore the app derivation. Measured:
+          # warm resolved 0dysk2a6...-app.drv and the test then wanted
+          # 1yhkdwgl...-app.drv (run 45559663953).
+          #
+          # Registering the same directory for root makes both sides read the same git
+          # state, so the derivation the test asks for is the one that was warmed.
+          sudo -n git config --global --add safe.directory "${PWD}" 2>/dev/null || true
+          if ${netns} git -C "${PWD}" rev-parse --show-toplevel >/dev/null 2>&1; then
+            echo "git sees ${PWD} inside the namespace"
+          else
+            echo "::warning::git cannot read ${PWD} inside the namespace; a path-flake dirty state may differ from the warm step"
+          fi
+          printf 'NIX_NETNS=%s\n' "${netns}" >> "$GITHUB_ENV"
+          echo "namespace: ${netns}"
+          # `sudo` resets PATH, so a bare `nix` inside the namespace is "No such file
+          # or directory" -- measured in job 138907381062. `env PATH=...` carries the
+          # caller's PATH through sudo, which the tests need anyway: they call `nix`,
+          # `jq`, `python3` and `rg` by their bare names.
+          #
+          # NO BUILD USERS, ON PURPOSE.
+          #
+          # A test that builds a derivation of its own failed on the restored store:
+          #
+          #   error: the group 'nixbld' specified in 'build-users-group' does not exist
+          #
+          # because the /nix cache restores /nix and not /etc/group. Creating the group
+          # and 32 users fixed the message and produced the next one --
+          #
+          #   error: the build users group 'nixbld' has no members
+          #
+          # -- measured in run 45527121607: the users were never created, and would have
+          # been a root-owned build account on a shared runner either way.
+          #
+          # The build users exist to drop privileges when a Nix DAEMON builds as root.
+          # These jobs run Nix as an unprivileged, single-purpose user whose store is
+          # already theirs, so there is no privilege to drop. Measured locally with
+          # `build-users-group =`: a plain derivation builds and produces its output.
+          # Setting it empty removes the dependency on an account the cache cannot carry.
+          printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf >/dev/null
+          printf 'build-users-group =\n' >> "$GITHUB_ENV"
+          echo "build-users-group: '$(nix config show build-users-group)'"
+
+          # `nix config show` rather than `nix eval`: it exits 0 inside the namespace, so
+          # the only thing this greps for is the offline warning itself, and it also
+          # prints the substituter list the namespace will see.
+          nix_bin="$(command -v nix)"
+          out="$(${netns} "${nix_bin}" config show substituters 2>&1 || true)"
+          if ! grep -qi "don't have Internet access" <<<"${out}"; then
+            echo "::error::Nix did not report offline mode inside the namespace"
+            printf '%s\n' "${out}" | head -10
+            exit 1
+          fi
+          echo "PASS OFFLINE-NAMESPACE: no network, and Nix reports it"
+
+      # ROOTLESS PODMAN, THE OPTION THAT DOES NOT DEPEND ON THE HOST'S NAMESPACE POLICY.
+      #
+      # `sudo -n unshare -n` works on today's runner images. It is still a root
+      # namespace created by a privileged helper, and a runner image that stops granting
+      # it would turn every test job red for a reason unrelated to the commit. Rootless
+      # podman gives the same guarantee with a different failure mode: measured here,
+      # `podman run --network=none` has no route AND no resolver --
+      #
+      #   wget: bad address 'cache.nixos.org'
+      #
+      # which is a stronger statement than "unshare succeeded", because it proves the
+      # fetcher cannot even resolve a name.
+      #
+      # Recorded, not required: a repository whose tests do not run inside a container
+      # still gets the namespace. When podman is usable, NIX_CONTAINER_NETNS names the
+      # command the run step should wrap tests in, and the probe below prefers it.
+      - name: "Compare the warmed derivation with the one root resolves"
+        shell: bash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          warmed="$(cat "${RUNNER_TEMP}/warmed-drv.txt" 2>/dev/null || true)"
+          root_drv="$(${NIX_NETNS:?} nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || root_drv=""
+          echo "warmed (runner): ${warmed:-<none>}"
+          echo "root resolves:   ${root_drv:-<none>}"
+          if [[ -n "${warmed}" && "${warmed}" == "${root_drv}" ]]; then
+            echo "PASS WARM-IDENTITY: the derivation is the same for both identities"
+          else
+            echo "::error::the derivation root resolves differs from the warmed one; this is why the test rebuilds"
+            exit 1
+          fi
+
       - name: "Check rootless podman as a fallback sandbox"
         shell: bash
         run: |
