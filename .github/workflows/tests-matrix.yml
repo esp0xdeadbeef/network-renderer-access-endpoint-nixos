@@ -1150,23 +1150,26 @@ jobs:
             echo "::error::no PASS line in the transcript; the test did not complete"
             exit 1
           fi
-          # A LINE COUNT IS NOT THE CRITERION, AND I GOT THAT WRONG ONCE ALREADY.
+          # WHAT COUNTS AS EVIDENCE, AFTER THREE WRONG ANSWERS.
           #
-          # The first attempt required 20 lines and rejected FS-165-HDS-010-SDS-010-
-          # SMS-020, which had passed against a closed store in 10 lines of output
-          # (run 45528415884). Length is not evidence of anything: a concise test is not
-          # a vacuous one, and the failure that motivated the check -- a test dying after
-          # 7 lines -- is already caught by the two assertions above, because a test that
-          # dies prints no `PASS`.
+          # Attempt 1 accepted any job that printed "PASS OFFLINE ... 0 substitutions",
+          # including one whose test had died after 7 lines (run 45527121607).
+          # Attempt 2 required 20 lines and rejected FS-165 (10 lines, run 45528415884).
+          # Attempt 3 required the transcript to mention nix or a store path, and
+          # rejected FS-030-HDS-010-SDS-020-SMS-010 (run 45531637354), which ran 13
+          # compile cases and printed a PASS summary -- it uses nix through a helper and
+          # reports outcomes, not commands.
           #
-          # What distinguishes evidence from a formality is that the run EXERCISED
-          # something: a test that passes without invoking nix, or without touching a
-          # store path, proves nothing about the cache. So the requirement is that the
-          # transcript mentions a /nix/store path or a nix invocation.
-          if ! grep -qE '/nix/store/|(^| )nix (build|run|eval|flake|develop|shell|store)' "${log}"; then
-            echo "::error::the transcript never mentions a store path or a nix command"
-            echo "::error::a test that does not exercise nix is not evidence about the store"
-            exit 1
-          fi
+          # All three were proxies for one question: DID THE TEST ACTUALLY RUN? The
+          # answer is already in the job:
+          #
+          #   * the test exited 0 and printed `PASS` -- a test that dies prints none;
+          #   * it ran inside `sudo -n unshare -n`, so a fetch could not have happened;
+          #   * its transcript is grepped for every substitution spelling below.
+          #
+          # So those are the criteria, and no length or content heuristic is added on
+          # top. A test that legitimately does not touch nix is still evidence that the
+          # SUITE runs offline; a test that fakes it would have to exit 0, print PASS,
+          # and survive the grep, which is exactly what the other gates already deny.
           printf 'PASS OFFLINE %s: test passed, %s lines of transcript, 0 substitutions, 0 cache.nixos.org fetches\n' \
             "${TEST_NAME:-shard}" "${lines}"
