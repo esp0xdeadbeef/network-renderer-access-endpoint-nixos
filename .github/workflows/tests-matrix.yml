@@ -576,7 +576,13 @@ jobs:
           # by this account, from every sibling lock that is present.
           for sibling_lock in ../*/flake.lock; do
             [[ -f "${sibling_lock}" ]] || continue
-            jq -r '.nodes[] | (.locked // {}) | select(.type == "github" and .owner == "esp0xdeadbeef") | "github:esp0xdeadbeef/\(.repo)/\(.rev)"' \
+            # EVERY github pin, not just this account's. Measured: after limiting the
+            # scan to esp0xdeadbeef, three jobs still failed on a THIRD-PARTY pin --
+            #   unable to download 'https://github.com/openconfig/public/archive/f3443...'
+            # (run 45539512049) -- because openconfig/public is an input of every lock in
+            # this fleet. A pin is a pin; the owner says nothing about whether the tests
+            # will materialise it.
+            jq -r '.nodes[] | (.locked // {}) | select(.type == "github" and .rev != null) | "github:\(.owner)/\(.repo)/\(.rev)"' \
               "${sibling_lock}" 2>/dev/null || true
           done | sort -u | grep -v '^$' > "${RUNNER_TEMP}/sibling-github-refs.txt" || true
           printf 'sibling github pins: %s\n' "$(wc -l < "${RUNNER_TEMP}/sibling-github-refs.txt")"
