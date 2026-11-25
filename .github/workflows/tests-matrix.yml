@@ -685,7 +685,9 @@ jobs:
               # The input's OWN nixpkgs input, not its `packages`: network-compiler's
               # flake exposes apps and lib and no packages at all, so asking it for a
               # stdenv resolves nothing. Its nixpkgs input always exists.
-              input_drv="$(nix eval --raw --impure \
+              # `--expr`, or `nix eval` treats the string as a FILE and fails with
+              # "getting status of .../let f = builtins.getFlake ...: No such file".
+              input_drv="$(nix eval --impure --raw --expr \
                 "let f = builtins.getFlake \"path:${input_path}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".stdenv.drvPath" 2>/dev/null \
                 || nix eval --raw --impure "path:${input_path}#packages.${system}.stdenv.drvPath" 2>/dev/null \
                 || true)"
