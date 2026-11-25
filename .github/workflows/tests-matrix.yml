@@ -675,6 +675,7 @@ jobs:
           # and a failure is a warning -- the test that needs it will say so by name.
           stdenv_budget="${STDENV_BUDGET_SECONDS:-300}"
           stdenv_done=0
+          stdenv_seen=""
           stdenv_max="${STDENV_MAX_INPUTS:-4}"
           if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
             while read -r input_path; do
@@ -692,9 +693,16 @@ jobs:
                 || nix eval --raw --impure "path:${input_path}#packages.${system}.stdenv.drvPath" 2>/dev/null \
                 || true)"
               [[ -n "${input_drv}" ]] || continue
+              # DEDUPE BY DERIVATION. Most inputs pin the same nixpkgs, so their stdenv
+              # is the same store path; without this the budget was spent re-realising
+              # one derivation and the next distinct input never got a turn.
+              case " ${stdenv_seen} " in
+                *" ${input_drv} "*) continue ;;
+              esac
+              stdenv_seen="${stdenv_seen} ${input_drv}"
               if nix-store -r "${input_drv}" > /dev/null 2>&1; then
                 printf '%s\n' "${input_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
-                printf '  input stdenv realised: %s\n' "$(basename "${input_path}")"
+                printf '  input stdenv realised: %s -> %s\n' "$(basename "${input_path}")" "$(basename "${input_drv}")"
                 stdenv_done=$((stdenv_done + 1))
               fi
             done < <(jq -r '[.. | .path? // empty] | unique | .[]' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)
