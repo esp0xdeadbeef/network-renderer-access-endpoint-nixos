@@ -860,10 +860,35 @@ jobs:
             exit 0
           fi
           echo "runner-user compile app: ${drv}"
+          # WARM THE WHOLE BUILD CLOSURE, NOT JUST THE OUTPUT.
+          #
+          # `nix-store -r <drv>` builds that derivation and what it references at
+          # RUNTIME. The app that gets rebuilt during the test is the same derivation,
+          # but the closure that fails is the one under `pkgs.nix`'s test dependencies
+          # (aeson, ShellCheck, binutils from ftpmirror) -- build-time inputs of the
+          # nix package this app puts on PATH. Fetching the output alone leaves those
+          # unbuilt, so the test rebuilds them and the closed store refuses
+          # (run 45578196767: 2k7kmfb3...-app.drv).
+          #
+          # `nix build` resolves the full build closure, which is exactly what has to
+          # be present before the store closes.
           if nix-store -r "${drv}" > /dev/null 2>&1; then
             echo "PASS WARM-LOCAL: ${drv} is in the store"
           else
             echo "::warning::${drv} is not in the imported closure"
+          fi
+          # `nix build ".#apps.<sys>.<name>"` is the ORIGINAL bug in this workflow and
+          # still fails: an app is `{ type = "app"; program = ...; }`, not a derivation.
+          # What pulls BUILD-time dependencies is building the program path itself,
+          # which carries the output context into a realisable store path. `nix-store -r`
+          # on the .drv builds only its runtime references, which is why the nix package
+          # this app puts on PATH still had an unbuilt test/aeson/ShellCheck closure at
+          # run time (run 45578196767).
+          prog="$(nix eval --raw "${PWD}#apps.${system}.compile.program" 2>/dev/null)" || prog=""
+          if [[ -n "${prog}" ]] && nix build --no-link "${prog}" > /dev/null 2>&1; then
+            echo "PASS WARM-LOCAL-DEPS: build closure of ${prog} is present"
+          else
+            echo "::warning::the build closure of ${drv} could not be completed"
           fi
           # Root's answer, recorded now while the network is still available.
           root_drv="$(sudo -n env "PATH=${PATH}" nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
