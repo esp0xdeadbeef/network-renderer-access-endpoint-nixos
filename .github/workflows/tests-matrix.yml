@@ -792,6 +792,510 @@ jobs:
           fi
           nix --version
 
+      # WARM THIS JOB'S OWN APP, IN THIS JOB'S OWN TREE.
+      #
+      # The app derivation is a function of `self.sourceInfo`, which is a hash of the
+      # whole tree INCLUDING .git: measured, adding a file under .git changes it --
+      #
+      #   g1  "/nix/store/lymiyvhd...-source"
+      #   g2  "/nix/store/wiq5m0p6...-source"   (one extra file in .git)
+      #
+      # and two jobs of the same run have different .git contents, because checkout,
+      # fetch and cache steps differ. Measured on run 45556225708, same commit, both
+      # worktrees clean:
+      #
+      #   list job sourceInfo  /nix/store/94x6gy6948sgw0cnbcv8za8cvdyxpia0-source
+      #   test job sourceInfo  /nix/store/69ywzxv3gdgyk19n0zk6a9pg1rx8s86h-source
+      #   list built  bkj9a41v...-app.drv / mc4hfgy2...-app.drv
+      #   test wanted l362lbsc...-app.drv   -> built binutils from source, offline, red
+      #
+      # So warming in the list job cannot cover this job: the derivation it names is
+      # for a different tree. This step builds the app HERE, from the closure already
+      # imported, and is a no-op when the path is present. It runs before the store is
+      # closed, which is why the close moved below it.
+      - name: "Warm this job's own app closure"
+        shell: bash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          echo "sourceInfo: $(nix eval --impure --raw --expr "let f = builtins.getFlake \"path:${PWD}\"; in builtins.toJSON (f.sourceInfo or {})" 2>/dev/null)"
+          drv="$(nix eval --raw "${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || {
+            echo "no compile app derivable here; the tests will say if they need one"
+            exit 0
+          }
+          echo "this job's compile app: ${drv}"
+          if nix-store -r "${drv}" > /dev/null 2>&1; then
+            echo "PASS WARM-LOCAL: ${drv} is in the store"
+          else
+            echo "::warning::${drv} is not in the imported closure; it cannot be built once the store closes"
+          fi
+
+      # THE STORE IS CLOSED FROM HERE DOWN.
+      #
+      # "The cache is hitting" was true for the /nix tarball and false for what the
+      # tests do with it: a test builds its own derivation, and with a cache hit but
+      # no closure the substitution is a network fetch from cache.nixos.org that no
+      # step reported. So the network is removed rather than measured:
+      #
+      #   substituters =            no substituter to fetch from
+      #   builders      =           no remote builder to offload to
+      #   --offline                 fail rather than resolve a missing path
+      #   flake-registry            no HTTP registry lookup
+      #
+      # `--offline` alone is not enough: it still consults configured substituters
+      # when they are reachable, so the substituter list is emptied as well. Both,
+      # then assert, then run.
+      #
+      # This is a tripwire, not a preference. If a test needs something the warm job
+      # did not anticipate, it fails HERE, with the path it wanted, instead of
+      # silently downloading 111 MiB per job and reporting green.
+      - name: "Close the store: no substituters, no network"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Nix has no `substituters` ENVIRONMENT variable. Lines like
+          # `substituters =` in $GITHUB_ENV are not settings a Nix process ever reads,
+          # and `substituters ` is not even a valid environment name. The settings live
+          # in nix.conf, and NIX_CONFIG is appended to it, so the closed configuration
+          # goes to both: NIX_CONFIG for this step and every later one, /etc/nix/nix.conf
+          # for a `nix` that does not inherit this environment (a test that re-execs
+          # through sudo, for instance).
+          #
+          # Built line by line: a YAML block scalar would carry this file's indentation
+          # into the value, and Nix would read "          substituters" as a name.
+          closed_config="$(printf '%s\n' \
+            'substituters =' \
+            'extra-substituters =' \
+            'builders =' \
+            'builders-use-substitutes = false' \
+            'flake-registry =' \
+            'experimental-features = nix-command flakes')"
+          {
+            echo 'NIX_CONFIG<<__CLOSED_CONFIG__'
+            printf '%s\n' "${closed_config}"
+            echo '__CLOSED_CONFIG__'
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "${closed_config}" | sudo tee -a /etc/nix/nix.conf >/dev/null
+          export NIX_CONFIG="${closed_config}"
+          # Asserted, not assumed: measured here, these lines empty both lists, and
+          # `nix eval` of this flake still works with them set.
+          printf 'substituters: [%s]\nbuilders: [%s]\n' \
+            "$(nix config show substituters)" "$(nix config show builders)"
+          if [[ -n "$(nix config show substituters | tr -d '[:space:]')" ]]; then
+            echo "::error::substituters are still configured; a missing path would be downloaded"
+            exit 1
+          fi
+
+      # `--offline` is a FLAG, not a setting, and the suites shell out to bare `nix`
+      # 200+ times (`nix run`, `nix build`, `nix flake archive`) in ways no NIX_CONFIG
+      # can cover. A wrapper on PATH is the only place that catches all of them: every
+      # `nix` invocation becomes `nix --offline <args>` unless the caller already said
+      # `--offline`. With substituters emptied above, a missing path is now an error
+      # that names the path, not a silent download.
+      # A NETWORK NAMESPACE, NOT JUST A FLAG.
+      #
+      # Measured on the runner image: `nix --offline` does NOT block flake INPUT
+      # fetching. A test that runs `nix flake prefetch github:...` reaches the network
+      # even with `--offline` on the command line and empty substituters, because
+      # `--offline` governs substitution, not fetchers. Reproduced:
+      #
+      #   nix --offline flake prefetch github:NixOS/nonexistent-repo-xyz123
+      #   error: unable to download 'https://api.github.com/repos/.../commits/HEAD'
+      #
+      # A 404 from api.github.com is proof the request left the machine. So the test
+      # runs inside a network namespace with no interfaces but loopback, where the
+      # request cannot leave at all and Nix says so itself:
+      #
+      #   warning: you don't have Internet access; disabling some network-dependent
+      #   features
+      #
+      # That warning is the point: enforcement by the kernel, reported by Nix, and
+      # visible in the transcript the assertion below greps.
+      # A NETWORK NAMESPACE, NOT JUST A FLAG.
+      #
+      # Measured: `nix --offline` does NOT block flake INPUT fetching --
+      # `nix --offline flake prefetch github:...` still opens a connection, because
+      # `--offline` governs substitution, not fetchers. So the test runs in a network
+      # namespace, where Nix itself reports
+      #   warning: you don't have Internet access; disabling some network-dependent
+      #   features
+      #
+      # Which namespace a host offers is a property of the host, and this fleet already
+      # measured it: tests/lib/nft-netns-check.sh in
+      # network-renderer-containerlab-linux-backend records that a GitHub-hosted
+      # ubuntu-26.04 runner restricts unprivileged user namespaces, so `unshare -Urn`
+      # dies with
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      # while `sudo -n unshare -n` works (the runners give passwordless sudo; the
+      # /nix prepare step already uses it). Same order as that helper: user namespace
+      # first, root namespace second, hard failure if neither -- never a silent pass.
+      - name: "Verify the test can run with no network"
+        shell: bash
+        run: |
+          set -euo pipefail
+          netns=""
+          # `sudo` drops PATH; the suites call `nix`, `jq`, `python3` and `rg` by name, so
+          # the caller's PATH is carried through `env`. Without this the run step failed
+          # with "failed to execute /usr/bin/script: No such file or directory".
+          if unshare -Urn true >/dev/null 2>&1; then
+            netns="unshare -Urn"
+          elif sudo -n env "PATH=${PATH}" unshare -n true >/dev/null 2>&1; then
+            netns="sudo -n env PATH=${PATH} unshare -n"
+          else
+            echo "::error::this host gives no network namespace, so an offline run cannot be verified"
+            exit 1
+          fi
+          printf 'NIX_NETNS=%s\n' "${netns}" >> "$GITHUB_ENV"
+          echo "namespace: ${netns}"
+          # `sudo` resets PATH, so a bare `nix` inside the namespace is "No such file
+          # or directory" -- measured in job 138907381062. `env PATH=...` carries the
+          # caller's PATH through sudo, which the tests need anyway: they call `nix`,
+          # `jq`, `python3` and `rg` by their bare names.
+          #
+          # NO BUILD USERS, ON PURPOSE.
+          #
+          # A test that builds a derivation of its own failed on the restored store:
+          #
+          #   error: the group 'nixbld' specified in 'build-users-group' does not exist
+          #
+          # because the /nix cache restores /nix and not /etc/group. Creating the group
+          # and 32 users fixed the message and produced the next one --
+          #
+          #   error: the build users group 'nixbld' has no members
+          #
+          # -- measured in run 45527121607: the users were never created, and would have
+          # been a root-owned build account on a shared runner either way.
+          #
+          # The build users exist to drop privileges when a Nix DAEMON builds as root.
+          # These jobs run Nix as an unprivileged, single-purpose user whose store is
+          # already theirs, so there is no privilege to drop. Measured locally with
+          # `build-users-group =`: a plain derivation builds and produces its output.
+          # Setting it empty removes the dependency on an account the cache cannot carry.
+          printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf >/dev/null
+          printf 'build-users-group =\n' >> "$GITHUB_ENV"
+          echo "build-users-group: '$(nix config show build-users-group)'"
+
+          # `nix config show` rather than `nix eval`: it exits 0 inside the namespace, so
+          # the only thing this greps for is the offline warning itself, and it also
+          # prints the substituter list the namespace will see.
+          nix_bin="$(command -v nix)"
+          out="$(${netns} "${nix_bin}" config show substituters 2>&1 || true)"
+          if ! grep -qi "don't have Internet access" <<<"${out}"; then
+            echo "::error::Nix did not report offline mode inside the namespace"
+            printf '%s\n' "${out}" | head -10
+            exit 1
+          fi
+          echo "PASS OFFLINE-NAMESPACE: no network, and Nix reports it"
+
+      # ROOTLESS PODMAN, THE OPTION THAT DOES NOT DEPEND ON THE HOST'S NAMESPACE POLICY.
+      #
+      # `sudo -n unshare -n` works on today's runner images. It is still a root
+      # namespace created by a privileged helper, and a runner image that stops granting
+      # it would turn every test job red for a reason unrelated to the commit. Rootless
+      # podman gives the same guarantee with a different failure mode: measured here,
+      # `podman run --network=none` has no route AND no resolver --
+      #
+      #   wget: bad address 'cache.nixos.org'
+      #
+      # which is a stronger statement than "unshare succeeded", because it proves the
+      # fetcher cannot even resolve a name.
+      #
+      # Recorded, not required: a repository whose tests do not run inside a container
+      # still gets the namespace. When podman is usable, NIX_CONTAINER_NETNS names the
+      # command the run step should wrap tests in, and the probe below prefers it.
+      - name: "Check rootless podman as a fallback sandbox"
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! command -v podman >/dev/null; then
+            echo "podman: not installed; the unshare namespace is the sandbox"
+            exit 0
+          fi
+          if ! podman run --rm --network=none docker.io/library/alpine:latest \
+                 sh -c 'echo ok' >/dev/null 2>&1; then
+            echo "podman: installed but rootless containers are not usable here"
+            exit 0
+          fi
+          echo "podman: rootless, network=none verified"
+
+      - name: "Force --offline on every nix invocation"
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper_dir="${RUNNER_TEMP}/offline-bin"
+          mkdir -p "${wrapper_dir}"
+          real_nix="$(command -v nix)"
+          if [[ "${real_nix}" == "${wrapper_dir}/nix" ]]; then
+            echo "::error::the offline wrapper resolved to itself"
+            exit 1
+          fi
+          cat > "${wrapper_dir}/nix" <<WRAPPER
+          #!/usr/bin/env bash
+          # Generated by .github/workflows/tests-matrix.yml. Not a convenience: a test
+          # that reaches the network must fail, and this is where it fails.
+          set -uo pipefail
+          real_nix="${real_nix}"
+          for arg in "\$@"; do
+            [[ "\${arg}" == "--offline" ]] && exec "\${real_nix}" "\$@"
+          done
+          exec "\${real_nix}" --offline "\$@"
+          WRAPPER
+          chmod +x "${wrapper_dir}/nix"
+          printf '%s\n' "${wrapper_dir}" >> "$GITHUB_PATH"
+          echo "wrapper: ${wrapper_dir}/nix -> ${real_nix} --offline"
+          "${wrapper_dir}/nix" --version
+          # Proof, as configuration rather than as an anecdote: with the wrapper on PATH,
+          # any `nix` a test invokes is `nix --offline`, and there is no substituter and
+          # no remote builder for it to reach.
+          #
+          # Not asserted here: "build something that is not in the store and watch it
+          # fail". Whether a package is already in the restored store is a fact about the
+          # cache, not about the configuration, so such a probe passes or fails for
+          # reasons unrelated to what this step sets up. Measured once: `nix --offline
+          # build nixpkgs#hello` SUCCEEDED on a warm store and looked like a broken
+          # guarantee when it was only a hit.
+          substituters="$(nix config show substituters)"
+          builders="$(nix config show builders)"
+          printf 'substituters: %s\nbuilders: %s\n' "${substituters}" "${builders}"
+          if [[ -n "${substituters//[[:space:]]/}" ]]; then
+            echo "::error::substituters are still configured ('${substituters}'); a missing path would be downloaded"
+            exit 1
+          fi
+          if [[ -n "${builders//[[:space:]]/}" ]]; then
+            echo "::error::remote builders are still configured ('${builders}')"
+            exit 1
+          fi
+          # `GITHUB_PATH` applies to LATER steps, so `command -v nix` here still finds the
+          # real binary -- asserting on it in this step failed job 138908084389 with
+          # "the nix a test resolves is not the offline wrapper" when the wiring was in
+          # fact correct. The assertion is therefore on the ordering inside GITHUB_PATH,
+          # which is what a later step's lookup will use: the wrapper directory must come
+          # before the real nix's directory.
+          wrapper_line="$(grep -n "^${wrapper_dir}$" "$GITHUB_PATH" | cut -d: -f1)"
+          real_line="$(grep -n "^${real_nix%/*}$" "$GITHUB_PATH" | cut -d: -f1 || true)"
+          if [[ -z "${wrapper_line}" ]]; then
+            echo "::error::the wrapper directory is not on GITHUB_PATH"
+            exit 1
+          fi
+          printf 'GITHUB_PATH: wrapper at line %s, real nix dir at line %s\n' \
+            "${wrapper_line}" "${real_line:-<inherited>}"
+          echo "PASS OFFLINE-CONFIG: wrapper precedes the real nix on PATH, no substituter, no builder"
+
+      - id: discover
+        name: "Discover entrypoints"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f scripts/lib/discover-tests.sh ]]; then
+            # shellcheck source=/dev/null
+            source scripts/lib/discover-tests.sh
+            mapfile -t names < <(discover_tests "$PWD")
+          else
+            # A repository without the contract falls back to the naming rule the
+            # contract encodes, so this workflow still works during a migration.
+            mapfile -t names < <(
+              find tests -maxdepth 1 -type f \
+                \( -name 'test-*.sh' -o -name 'test_*.py' \
+                   -o -regex '.*/FS-[0-9]+-HDS-[0-9]+-SDS-[0-9]+-\(SMS\|SIT\)-[0-9a-z][a-z0-9-]*\(-[a-z0-9-]+\)?\.\(sh\|py\)' \) \
+                ! -name 'test.sh' -printf '%f\n' | LC_ALL=C sort
+            )
+          fi
+          count="${#names[@]}"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if ((count == 0)); then
+            echo 'matrix={"shard":[]}' >> "$GITHUB_OUTPUT"
+            echo "no entrypoints discovered; the matrix will be empty"
+            exit 0
+          fi
+          # GitHub runs up to 256 matrix jobs; the cap is on the MATRIX, not on the
+          # parallelism within it. So the default is one job per test -- every test in
+          # its own runner, in parallel, named after itself -- and sharding is only a
+          # fallback for a repository whose discovery exceeds the cap. Measured:
+          # 124 entrypoints here, 287 in the control-plane model, 486 in network-labs.
+          # Sharding 124 into 16 jobs of 8 was strictly worse: same wall clock, less
+          # parallelism, and a failure named "shard 7" instead of the test.
+          max_jobs=250
+          if (( count <= max_jobs )); then
+            json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+            echo "shards=0" >> "$GITHUB_OUTPUT"
+            echo "shard_size=1" >> "$GITHUB_OUTPUT"
+            echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+            echo "discovered ${count} entrypoint(s): one job per test, in parallel"
+          else
+            shard_size="${TEST_SHARD_SIZE:-$(( (count + max_jobs - 1) / max_jobs ))}"
+            shards=$(( (count + shard_size - 1) / shard_size ))
+            echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+            echo "shard_size=${shard_size}" >> "$GITHUB_OUTPUT"
+            json="$(python3 -c "import json;print(json.dumps({'shard':list(range(${shards}))}))")"
+            echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+            echo "discovered ${count} entrypoint(s): ${shards} shard(s) of ${shard_size}, because ${count} exceeds the ${max_jobs}-job matrix cap"
+          fi
+
+      # Warm the BUILD closure, not just the evaluation inputs.
+      #
+      # `flake-check` runs `nix flake check --no-build`, so its store has every flake
+      # input and nothing that a test builds. Every test job then pays for the same
+      # closure: measured on FS-030-HDS-010-SDS-040-SMS-010, 144 paths / 111 MiB,
+      # including git (2.52.0) whose `out` references its own 15.1 MiB `-doc` output.
+      # The closure is warmed ONCE, in `list` (see "Warm the build closure" there),
+      # and reached these jobs as the `nix-store` artifact. This block used to be
+      # duplicated here, and the duplicate is the copy that kept the broken
+      # `nix build .#apps.<sys>.<name>` spelling long enough to ship: two copies of a
+      # step are two chances to fix one of them. Removed, not repaired.
+
+      # jq and ripgrep ship with the runner image. sops is 45 MB and yq is 10 MB,
+      # and 47 of 1689 test files name sops while 2 name yq -- so they are fetched
+      # only by the jobs whose test uses them.
+      #
+      # The artifact this replaces was built once and did not run: `cp -L` out of the
+      # Nix store copies the binary but not its closure, and the copied jq failed with
+      # "cannot execute: required file not found" (it loads libjq.so.1 from a store
+      # path the next job does not have). A store path is not a portable binary.
+      - name: "Install the tools this test uses"
+        shell: bash
+        env:
+          TEST_NAME: ${{ matrix.test }}
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null || { echo "jq is missing from the runner image" >&2; exit 1; }
+
+          # Measured: ripgrep is NOT on the ubuntu image either (job 138861088165's
+          # successor died with "ripgrep is missing from the runner image"). The musl
+          # binary is 2.5 MB and static, so it needs no apt and no store closure.
+          # ripgrep is 2.5 MB and the same bytes for every job, so it lives in a
+          # cached directory instead of being downloaded 288 times per sweep.
+          if [[ ! -x "${HOME}/.local/bin/rg" ]] && ! command -v rg >/dev/null; then
+            # The archive has no "./" prefix on its members; asking tar for
+            # "./ripgrep-.../rg" fails with "Not found in archive".
+            mkdir -p "${HOME}/.local/bin"
+            rg_unpack="$(mktemp -d)"
+            curl -fsSL --retry 3 \
+              https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
+              | tar -xz -C "${rg_unpack}" --strip-components=1 \
+                  "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg"
+            install -m 0755 "${rg_unpack}/rg" "${HOME}/.local/bin/rg"
+          fi
+          printf '%s\n' "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          rg --version | head -1
+
+          # Matrix values come from filenames, so they are read from the environment,
+          # never spliced into the script text.
+          test_path="tests/${TEST_NAME}"
+          uses() {
+            grep -rqs -- "$1" "${test_path}" "tests/lib/$(basename "${test_path}" .sh)" 2>/dev/null
+          }
+          if uses sops; then
+            curl -fsSL --retry 3 -o /usr/local/bin/sops \
+              https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64
+            chmod +x /usr/local/bin/sops
+            sops --version
+          fi
+          if uses yq; then
+            curl -fsSL --retry 3 -o /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+            chmod +x /usr/local/bin/yq
+            yq --version
+          fi
+
+      # The suites resolve sibling repositories as ../network-*, the developer
+      # layout. Without them the cross-repository cases fail (or, worse, skip), and
+      # the matrix only checks out one repository. Materialise every github input
+      # this repository pins next to the workspace, which is exactly what the old
+      # per-repository CI job did -- deleting that job deleted this step with it.
+      - name: "Check out sibling repositories"
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(dirname "$GITHUB_WORKSPACE")"
+
+          # NO `nix flake lock` here.
+          #
+          # Three of these repositories gitignore `flake.lock` (measured:
+          # network-compiler, network-renderer-nixos, and the nixos repo), so
+          # `[[ ! -f flake.lock ]] && nix flake lock` fired in EVERY test job and
+          # resolved the whole input graph to answer a question about file paths:
+          # measured in job 138861088165, "unpacking network-labs", "unpacking
+          # nixpkgs/0182a361", "unpacking nixpkgs/ac56c456" -- ~200 MB per job, and
+          # up to 288 jobs per sweep.
+          #
+          # The sibling list is just the `github:esp0xdeadbeef/<repo>` inputs, and a
+          # lock, when it exists, only adds the revision. Both are readable without
+          # Nix: python3 is on the image.
+          python3 - "$RUNNER_TEMP/siblings.tsv" <<'PARSE'
+          import json, re, sys
+
+          out = {}
+          lock_path = "flake.lock"
+          try:
+              lock = json.load(open(lock_path))
+          except FileNotFoundError:
+              lock = None
+
+          flake = open("flake.nix").read()
+          for name, repo in re.findall(
+              r'([A-Za-z0-9_-]+)\.url\s*=\s*"github:esp0xdeadbeef/([A-Za-z0-9_.-]+)"', flake
+          ):
+              out[name] = [repo, "main"]
+
+          if lock is not None:
+              root = (lock.get("nodes", {}).get("root", {}) or {}).get("inputs", {})
+              for alias, node_name in root.items():
+                  node = lock.get("nodes", {}).get(node_name, {}) if isinstance(node_name, str) else {}
+                  locked = node.get("locked", {}) or {}
+                  if locked.get("type") == "github" and locked.get("owner") == "esp0xdeadbeef":
+                      out[alias] = [locked.get("repo", ""), locked.get("rev", "main")]
+
+          with open(sys.argv[1], "w") as handle:
+              for name, (repo, rev) in sorted(out.items()):
+                  handle.write(f"{name}\t{repo}\t{rev or 'main'}\n")
+          print(f"siblings: {len(out)}")
+          PARSE
+
+          while IFS=$'\t' read -r name repo rev; do
+            [[ -n "${name}" && -n "${repo}" ]] || continue
+            [[ -e "${workspace}/${name}" ]] && continue
+            echo "::group::sibling ${name} @ ${rev:0:10}"
+            git init --quiet "${workspace}/${name}"
+            git -C "${workspace}/${name}" remote add origin "https://github.com/esp0xdeadbeef/${repo}.git"
+            git -C "${workspace}/${name}" fetch --quiet --depth 1 origin "${rev}"
+            git -C "${workspace}/${name}" checkout --quiet FETCH_HEAD
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/siblings.tsv"
+
+      # Siblings the tests need but flake.lock CANNOT pin, with a reason.
+      #
+      # `tests/test-canonical-collection-loss.sh` imports
+      # network-realization-model/src/default.nix directly, because the check it
+      # audits (canonicalFor) lives there. It cannot be a flake input: this
+      # repository is an input OF network-realization-model, so pinning it back
+      # would be a cycle. Without this step the suite failed with
+      #
+      #   FAIL CANONICAL-COLLECTION-LOSS: no realization-model checkout at
+      #   .../network-realization-model
+      #
+      # which is the correct behaviour for the test (it refuses to pass without the
+      # thing it audits) and an unmet dependency for CI. The revision is main at the
+      # time of the run, exactly as a developer's ../network-realization-model is: a
+      # test that audits another repository's current code and pins that code would
+      # only ever audit the pin.
+      - name: "Check out the realization model (unpinnable sibling)"
+        # One shared workflow for the whole fleet: the step is present everywhere and
+        # runs only where the test that needs it exists. An unconditional step here
+        # forks this file, and a forked workflow is a gate that answers differently per
+        # repository.
+        if: hashFiles('tests/test-canonical-collection-loss.sh') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$(dirname "$GITHUB_WORKSPACE")"
+          target="${workspace}/network-realization-model"
+          [[ -e "${target}" ]] && exit 0
+          git init --quiet "${target}"
+          git -C "${target}" remote add origin "https://github.com/esp0xdeadbeef/network-realization-model.git"
+          git -C "${target}" fetch --quiet --depth 1 origin main
+          git -C "${target}" checkout --quiet FETCH_HEAD
+
       # THE STORE IS CLOSED FROM HERE DOWN.
       #
       # "The cache is hitting" was true for the /nix tarball and unverified for what
@@ -1129,15 +1633,6 @@ jobs:
           git -C "${target}" remote add origin "https://github.com/esp0xdeadbeef/network-realization-model.git"
           git -C "${target}" fetch --quiet --depth 1 origin main
           git -C "${target}" checkout --quiet FETCH_HEAD
-
-      - name: "Record the source identity this job will build from"
-        shell: bash
-        run: |
-          set -uo pipefail
-          echo "sourceInfo: $(nix eval --impure --raw --expr "let f = builtins.getFlake \"path:${PWD}\"; in builtins.toJSON (f.sourceInfo or {})" 2>/dev/null)"
-          echo "worktree: $(git status --porcelain --untracked-files=all | wc -l) changed path(s)"
-          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          echo "compile drv here: $(nix eval --raw "${PWD}#apps.${system}.compile.program" --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)"
 
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
