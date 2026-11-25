@@ -624,198 +624,24 @@ jobs:
             echo "::endgroup::"
           done < "${RUNNER_TEMP}/sibling-github-refs.txt"
 
-          # THE APPS OF THE PINNED REVISIONS, TOO.
-          #
-          # A provenance test compiles through a sibling's pinned compiler, and that
-          # revision's apps are its own derivations -- different from this repository's.
-          # Measured in run 45540528886: the warm job built z6acyg8v...-app.drv and the
-          # test then tried to build g1fbnn7v...-app.drv from source, which needs
-          # binutils-with-gold from ftpmirror.gnu.org. Seeing the source is not enough;
-          # the app the test executes has to be in the store.
-          #
-          # Every fleet-owned pin is warmed. That is up to 16 extra app builds, which is
-          # the price of a warm that is actually warm: the alternative measured out at
-          # a test building binutils from source at run time (run 45540528886). A
-          # revision without apps is not an error, and an app that fails to build is a
-          # warning here -- the test that needs it will fail and name the path, which is
-          # the signal this change exists to provide.
-          if [[ -s "${RUNNER_TEMP}/sibling-github-refs.txt" ]]; then
-            while read -r ref; do
-              [[ -n "${ref}" ]] || continue
-              [[ "${ref}" == github:esp0xdeadbeef/* ]] || continue
-              echo "::group::warm apps of ${ref}"
-              system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-              # A PINNED REVISION CAN HAVE NO flake.lock.
-              #
-              # Measured on network-compiler@5a8682f: three repositories gitignore
-              # flake.lock, so that revision ships none, and evaluating it fails while
-              # "updating the lock file" -- which needs the network, which the closed
-              # store refuses. That is why this step reported "no apps at ..." while the
-              # test that uses the same revision succeeded (run 45545298522).
-              #
-              # The source is copied out of the store, made writable, and given THIS
-              # repository's lock, so the pinned source evaluates with pins that already
-              # exist. Nix refuses to write into a store path, hence the copy.
-              sib_src="$(awk -F'\t' -v r="${ref}" '$1 == r { print $2 }' "${RUNNER_TEMP}/ref-paths.tsv")"
-              if [[ -z "${sib_src}" ]]; then
-                echo "::warning::no prefetched source recorded for ${ref}"
-                echo "::endgroup::"
-                continue
-              fi
-              sib_dir="${RUNNER_TEMP}/sib-src/$(echo "${ref}" | tr '/:' '__')"
-              rm -rf "${sib_dir}"
-              mkdir -p "$(dirname "${sib_dir}")"
-              cp -r "${sib_src}" "${sib_dir}"
-              chmod -R u+w "${sib_dir}"
-              if [[ ! -f "${sib_dir}/flake.lock" && -f flake.lock ]]; then
-                cp flake.lock "${sib_dir}/flake.lock"
-                echo "supplied this repository's lock: ${ref} ships none"
-              fi
-              if nix eval --json "path:${sib_dir}#apps.${system_name}" > "${RUNNER_TEMP}/sib-apps.json" 2>/dev/null; then
-                while read -r sib_app; do
-                  [[ -n "${sib_app}" ]] || continue
-                  sib_drv="$(nix eval --raw "path:${sib_dir}#apps.${system_name}.${sib_app}.program" \
-                    --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
-                  nix-store -r --add-root "${RUNNER_TEMP}/sib-roots/${sib_app}" "${sib_drv}" > /dev/null 2>&1 || {
-                    echo "::warning::${ref} app ${sib_app} did not build; if a test needs it, that test will say so"
-                    continue
-                  }
-                  nix-store -qR "${sib_drv}" >> "${RUNNER_TEMP}/sib-paths.txt"
-                  nix-store -q --outputs "${sib_drv}" 2>/dev/null | while read -r o; do
-                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/sib-paths.txt"
-                  done
-                done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/sib-apps.json")
-              else
-                echo "no apps at ${ref}"
-              fi
-              echo "::endgroup::"
-            done < "${RUNNER_TEMP}/sibling-github-refs.txt"
-            if [[ -s "${RUNNER_TEMP}/sib-paths.txt" ]]; then
-              sort -u -o "${RUNNER_TEMP}/sib-paths.txt" "${RUNNER_TEMP}/sib-paths.txt"
-              cat "${RUNNER_TEMP}/sib-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-              printf 'sibling app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/sib-paths.txt")"
-            fi
-          fi
-
-          nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
-          jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
-            >> /tmp/flake-input-paths.txt
-          cat /tmp/flake-input-paths.txt >> "${RUNNER_TEMP}/app-outs.txt"
-          printf 'flake inputs archived: %s\n' "$(wc -l < /tmp/flake-input-paths.txt)"
-
-          # THE FLAKE INPUTS' OWN APPS, NOT JUST THEIR SOURCES.
-          #
-          # `nix run "path:$PWD#compile"` evaluates this flake, which materialises the
-          # build closures of its inputs. Archiving those inputs fetched their SOURCES
-          # only, so a test that runs the compiler pulled network-labs' closure --
-          # ghc-9.10.3, binutils-with-gold -- and the closed store refused it
-          # (run 45563403679).
-          #
-          # network-labs does have apps of its own; building them here is what makes
-          # that closure part of the cache instead of part of the run.
-          labs_src="$(jq -r '.inputs["network-labs"].path // empty' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)"
-          if [[ -n "${labs_src}" && -d "${labs_src}" ]]; then
-            echo "::group::warm network-labs apps from ${labs_src}"
-            labs_system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-            if nix eval --json "path:${labs_src}#apps.${labs_system}" > "${RUNNER_TEMP}/labs-apps.json" 2>/dev/null; then
-              while read -r labs_app; do
-                [[ -n "${labs_app}" ]] || continue
-                labs_drv="$(nix eval --raw "path:${labs_src}#apps.${labs_system}.${labs_app}.program" \
-                  --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
-                if nix-store -r "${labs_drv}" > /dev/null 2>&1; then
-                  echo "  ${labs_app}: ${labs_drv}"
-                  nix-store -qR "${labs_drv}" >> "${RUNNER_TEMP}/labs-paths.txt"
-                  nix-store -q --outputs "${labs_drv}" 2>/dev/null | while read -r o; do
-                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/labs-paths.txt"
-                  done
-                else
-                  echo "::warning::network-labs app ${labs_app} did not build"
-                fi
-              done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/labs-apps.json")
-            else
-              echo "no apps at network-labs"
-            fi
-            echo "::endgroup::"
-            if [[ -s "${RUNNER_TEMP}/labs-paths.txt" ]]; then
-              sort -u -o "${RUNNER_TEMP}/labs-paths.txt" "${RUNNER_TEMP}/labs-paths.txt"
-              cat "${RUNNER_TEMP}/labs-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-              printf 'network-labs paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/labs-paths.txt")"
-            fi
-          fi
-
-      # THE PICNED INPUT'S OWN APP, BUILT.
+      # THE TEST ENVIRONMENT, BUILT ONCE AND SHIPPED.
       #
-      # The provenance test runs `nix flake archive "path:${repo_root}"`, whose
-      # `network-labs` entry pins ITS OWN network-compiler at 5a8682f. Archiving labs'
-      # sources is not enough: evaluating through that revision needs that revision's
-      # closure, and the build that failed was 8plxzydy...-app.drv, which matches none
-      # of this repository's apps.
-      #
-      # Measured locally: the pinned revision's compile app resolves to
-      # mx20bd9g...-app.drv -- a genuinely different derivation from this
-      # repository's. So each pinned revision is warmed for the app the tests run,
-      # with a lock supplied when the revision ships none.
-      - name: "Warm the pinned compilers the tests evaluate through"
+      # `.#devShells.<system>.default` declares what the suites need -- nix, jq, git,
+      # ripgrep, coreutils, zstd -- and building it puts exactly that closure in the
+      # artifact, so the test jobs use the declared tools from the store instead of the
+      # image plus four `curl`s. Two seconds locally; the cheapest step in this job.
+      - name: "Warm the test environment (devShell)"
         shell: bash
         run: |
           set -uo pipefail
-          if [[ ! -s "${RUNNER_TEMP}/ref-paths.tsv" ]]; then
-            echo "no prefetched refs recorded; nothing to warm"
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          if ! env_path="$(nix build --no-link --print-out-paths ".#devShells.${system}.default" 2>/dev/null)"; then
+            echo "::warning::no devShell in this repository; its tests rely on the image"
             exit 0
           fi
-          system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          : > "${RUNNER_TEMP}/pinned-paths.txt"
-          while IFS=$'\t' read -r ref src_path; do
-            [[ -n "${ref}" && -n "${src_path}" ]] || continue
-            [[ "${ref}" == github:esp0xdeadbeef/network-compiler/* ]] || continue
-            echo "::group::pinned compiler app ${ref}"
-            work="${RUNNER_TEMP}/pinned/$(echo "${ref}" | tr '/:' '__')"
-            rm -rf "${work}"
-            mkdir -p "$(dirname "${work}")"
-            cp -r "${src_path}" "${work}"
-            chmod -R u+w "${work}"
-            # THE PINNED REVISION SHIPS NO LOCK, SO ITS APP IDENTITY IS NOT STABLE.
-            #
-            # Three repositories gitignore flake.lock, so the pinned source has none.
-            # Evaluating it creates one from whatever resolves AT THAT MOMENT, so the
-            # app derivation differs between the warm and the test even in the same job
-            # -- measured: the warm built 0sk992zv...-app, and the test then wanted
-            # 0p9fvblx...-app (run 45597803973), with an empty aeson/ShellCheck closure
-            # behind it.
-            #
-            # A lock taken from the SIBLING's own flake.lock for this repository is
-            # stable: it is the same file on every run. That is what is copied here.
-            if [[ ! -f "${work}/flake.lock" ]]; then
-              supplied=""
-              for cand in ../network-labs/flake.lock ../network-compiler/flake.lock flake.lock; do
-                [[ -f "${cand}" ]] || continue
-                supplied="${cand}"
-                break
-              done
-              if [[ -n "${supplied}" ]]; then
-                cp "${supplied}" "${work}/flake.lock"
-                echo "supplied ${supplied} as the lock for ${ref}"
-              fi
-            fi
-            # Resolve the app EXACTLY as the test does: `path:` + `--impure`, and through
-          # `nix run`'s own installable, so no flag difference can produce a different
-          # derivation. The test invokes
-          #   nix run --no-warn-dirty --no-write-lock-file "path:${repo_root}#compile"
-          # so that is what is resolved and built here.
-          pinned_prog="$(nix eval --raw --impure "path:${work}#apps.${system_name}.compile.program" 2>/dev/null)" || pinned_prog=""
-            if [[ -n "${pinned_prog}" ]] && nix build --no-link "${pinned_prog}" > /dev/null 2>&1; then
-              echo "PASS WARM-PINNED-APP: ${ref} -> ${pinned_prog}"
-              nix-store -qR "${pinned_prog}" >> "${RUNNER_TEMP}/pinned-paths.txt" 2>/dev/null || true
-            else
-              echo "::warning::pinned compiler app for ${ref} could not be built"
-            fi
-            echo "::endgroup::"
-          done < "${RUNNER_TEMP}/ref-paths.tsv"
-          if [[ -s "${RUNNER_TEMP}/pinned-paths.txt" ]]; then
-            sort -u -o "${RUNNER_TEMP}/pinned-paths.txt" "${RUNNER_TEMP}/pinned-paths.txt"
-            cat "${RUNNER_TEMP}/pinned-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-            printf 'pinned app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/pinned-paths.txt")"
-          fi
+          echo "devShell: ${env_path}"
+          nix-store -qR "${env_path}" >> "${RUNNER_TEMP}/app-outs.txt"
+          printf 'devShell closure: %s path(s)\n' "$(nix-store -qR "${env_path}" | wc -l)"
 
       - name: "Export the store closure for the test jobs"
         shell: bash
@@ -1424,45 +1250,58 @@ jobs:
           TEST_NAME: ${{ matrix.test }}
         run: |
           set -euo pipefail
-          command -v jq >/dev/null || { echo "jq is missing from the runner image" >&2; exit 1; }
-
-          # Measured: ripgrep is NOT on the ubuntu image either (job 138861088165's
-          # successor died with "ripgrep is missing from the runner image"). The musl
-          # binary is 2.5 MB and static, so it needs no apt and no store closure.
-          # ripgrep is 2.5 MB and the same bytes for every job, so it lives in a
-          # cached directory instead of being downloaded 288 times per sweep.
-          if [[ ! -x "${HOME}/.local/bin/rg" ]] && ! command -v rg >/dev/null; then
-            # The archive has no "./" prefix on its members; asking tar for
-            # "./ripgrep-.../rg" fails with "Not found in archive".
-            mkdir -p "${HOME}/.local/bin"
-            rg_unpack="$(mktemp -d)"
-            curl -fsSL --retry 3 \
-              https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
-              | tar -xz -C "${rg_unpack}" --strip-components=1 \
-                  "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg"
-            install -m 0755 "${rg_unpack}/rg" "${HOME}/.local/bin/rg"
+          # THE TOOLS COME FROM THE FLAKE NOW, NOT FROM curls.
+          #
+          # This step used to ensure jq from the image, download ripgrep 2.5 MB from
+          # GitHub releases, and fetch sops (45 MB) and yq (10 MB) for the tests that
+          # name them. None of that was declared, so nothing could cache it: the
+          # warmed /nix store never contained those tools, and every job downloaded
+          # them again.
+          #
+          # `.#devShells.<system>.default` declares them instead -- coreutils, git,
+          # jq, nix, ripgrep, zstd -- so one derivation describes the environment,
+          # `nix develop` builds it, and the warmed store carries it. The step's job
+          # is now only to prove the declared tools are the ones on PATH.
+          system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          # BUILDING A DEV SHELL DOES NOT PUT ITS TOOLS ON PATH.
+          #
+          # `pkgs.mkShell`'s output is a marker derivation, not a bin/. Only
+          # `nix develop` assembles PATH, and a workflow step needs the tools visible to
+          # later steps, so the packages themselves are resolved and their bin/ dirs are
+          # added to GITHUB_PATH. Measured the wrong way first (run 45645903550): every
+          # test job failed with "rg is declared in .#devShells but not on PATH".
+          if ! nix eval --raw --impure ".#devShells.${system_name}.default.name" > /dev/null 2>&1; then
+            echo "::warning::no devShell in this repository; the image's tools will be used"
+          else
+            # The packages are read from the flake's own declaration, not from
+            # nativeBuildInputs: that list resolves to `-dev` outputs for jq, nix and
+            # zstd, which carry headers and no bin/. The declaration in `packages` is
+            # what a `nix develop` puts on PATH, so it is what is read here.
+            nix eval --json --impure \
+              --expr "let f = builtins.getFlake \"path:${PWD}\"; in map toString (f.devShells.\"${system_name}\".default.packages or [])" \
+              > "${RUNNER_TEMP}/shell-pkgs.json" 2>/dev/null || echo '[]' > "${RUNNER_TEMP}/shell-pkgs.json"
+            jq -r '.[]' "${RUNNER_TEMP}/shell-pkgs.json" 2>/dev/null | while read -r pkg; do
+              [[ -d "${pkg}/bin" ]] && printf '%s\n' "${pkg}/bin" >> "$GITHUB_PATH"
+            done || true
+            echo "devShell packages: $(jq -r 'length' "${RUNNER_TEMP}/shell-pkgs.json" 2>/dev/null || echo 0)"
           fi
-          printf '%s\n' "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          while read -r tool; do
+            [[ -n "${tool}" ]] || continue
+            if command -v "${tool}" >/dev/null; then
+              printf '  %-10s %s\n' "${tool}" "$(command -v "${tool}")"
+            else
+              echo "::error::${tool} is declared in .#devShells but not on PATH"
+              exit 1
+            fi
+          done <<'TOOLS'
+          nix
+          jq
+          git
+          rg
+          zstd
+          TOOLS
           rg --version | head -1
-
-          # Matrix values come from filenames, so they are read from the environment,
-          # never spliced into the script text.
-          test_path="tests/${TEST_NAME}"
-          uses() {
-            grep -rqs -- "$1" "${test_path}" "tests/lib/$(basename "${test_path}" .sh)" 2>/dev/null
-          }
-          if uses sops; then
-            curl -fsSL --retry 3 -o /usr/local/bin/sops \
-              https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64
-            chmod +x /usr/local/bin/sops
-            sops --version
-          fi
-          if uses yq; then
-            curl -fsSL --retry 3 -o /usr/local/bin/yq \
-              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-            chmod +x /usr/local/bin/yq
-            yq --version
-          fi
+          jq --version
 
       # The suites resolve sibling repositories as ../network-*, the developer
       # layout. Without them the cross-repository cases fail (or, worse, skip), and
