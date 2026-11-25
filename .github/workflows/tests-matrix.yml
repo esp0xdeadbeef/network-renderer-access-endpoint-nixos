@@ -693,15 +693,30 @@ jobs:
       #
       # That warning is the point: enforcement by the kernel, reported by Nix, and
       # visible in the transcript the assertion below greps.
+      # Which namespace a host offers is a property of the host, and this fleet already
+      # measured it: network-renderer-containerlab-linux-backend's
+      # tests/lib/nft-netns-check.sh records that a GitHub-hosted ubuntu-26.04 runner
+      # restricts unprivileged user namespaces, so `unshare -Urn` dies with
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      # while `sudo -n unshare -n` works (the runners give passwordless sudo; the /nix
+      # prepare step already uses it). Same order as that helper: user namespace first,
+      # root namespace second, hard failure if neither -- never a silent pass.
       - name: "Verify the test can run with no network"
         shell: bash
         run: |
           set -euo pipefail
-          if ! unshare --net --map-root-user true 2>/dev/null; then
-            echo "::error::cannot create a network namespace; the offline guarantee would be unverified"
+          netns=""
+          if unshare -Urn true >/dev/null 2>&1; then
+            netns="unshare -Urn"
+          elif sudo -n unshare -n true >/dev/null 2>&1; then
+            netns="sudo -n unshare -n"
+          else
+            echo "::error::this host gives no network namespace, so an offline run cannot be verified"
             exit 1
           fi
-          out="$(unshare --net --map-root-user nix eval --raw --expr '1' 2>&1 || true)"
+          printf 'NIX_NETNS=%s\n' "${netns}" >> "$GITHUB_ENV"
+          echo "namespace: ${netns}"
+          out="$(${netns} nix eval --raw --expr '1' 2>&1 || true)"
           if ! grep -qi "don't have Internet access" <<<"${out}"; then
             echo "::error::Nix did not report offline mode inside the namespace"
             printf '%s\n' "${out}" | head -10
@@ -922,11 +937,15 @@ jobs:
           # run was offline" step greps. `-e` propagates the test's exit status, so a
           # failure is still a failure here.
           command -v script >/dev/null || { echo "util-linux script(1) is required" >&2; exit 1; }
-          # The test runs INSIDE the network namespace: no route out, so no fetcher and
-          # no substituter can reach anything, whatever flag the test passes.
+          # The test runs INSIDE the network namespace, using whichever form the host
+          # offers (see "Verify the test can run with no network").
+          #
+          # The test name is expanded by the shell `script -c` starts, from the
+          # environment -- never spliced into this line, because a filename a pull
+          # request controls would otherwise be code here.
           if [[ -n "${TEST_NAME:-}" ]]; then
-            exec unshare --net --map-root-user \
-              script -q -e -c "bash tests/run-one.sh 'tests/${TEST_NAME}'" "${RUNNER_TEMP}/run.log"
+            exec ${NIX_NETNS:?} \
+              script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
 
           # The same discovery and the same sort as the list job, so shard N owns
@@ -950,8 +969,8 @@ jobs:
           printf 'shard %s/%s runs %s test(s)\n' "${SHARD}" "${SHARDS}" "${#mine[@]}"
           failures=0
           for test_path in "${mine[@]}"; do
-            if ! unshare --net --map-root-user \
-                   script -q -e -c "bash tests/run-one.sh '${test_path}'" "${RUNNER_TEMP}/run.log"; then
+            if ! TEST_PATH="${test_path}" ${NIX_NETNS:?} \
+                   script -q -e -c 'bash tests/run-one.sh "${TEST_PATH}"' "${RUNNER_TEMP}/run.log"; then
               failures=$((failures + 1))
             fi
           done
