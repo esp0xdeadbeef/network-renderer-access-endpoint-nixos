@@ -572,6 +572,24 @@ jobs:
             echo "no provenance test in this repository; nothing to archive"
             exit 0
           fi
+          # Rather than run the sibling lock parser here, ask jq: every github pin owned
+          # by this account, from every sibling lock that is present.
+          for sibling_lock in ../*/flake.lock; do
+            [[ -f "${sibling_lock}" ]] || continue
+            jq -r '.nodes[] | (.locked // {}) | select(.type == "github" and .owner == "esp0xdeadbeef") | "github:esp0xdeadbeef/\(.repo)/\(.rev)"' \
+              "${sibling_lock}" 2>/dev/null || true
+          done | sort -u | grep -v '^$' > "${RUNNER_TEMP}/sibling-github-refs.txt" || true
+          printf 'sibling github pins: %s\n' "$(wc -l < "${RUNNER_TEMP}/sibling-github-refs.txt")"
+          while read -r ref; do
+            [[ -n "${ref}" ]] || continue
+            echo "::group::materialise ${ref}"
+            nix flake archive --json "${ref}" >/dev/null || {
+              echo "::error::a sibling pins ${ref} and it could not be materialised"
+              exit 1
+            }
+            echo "::endgroup::"
+          done < "${RUNNER_TEMP}/sibling-github-refs.txt"
+
           nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
           jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
             >> /tmp/flake-input-paths.txt
