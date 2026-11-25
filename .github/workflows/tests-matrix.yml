@@ -1037,6 +1037,44 @@ jobs:
             echo "::warning::could not resolve the pinned nixpkgs stdenv"
           fi
 
+          # AND THE STDENV OF EVERY INPUT THAT HAS ITS OWN nixpkgs.
+          #
+          # A cross-repository test evaluates a SIBLING's flake, and that sibling pins
+          # its own nixpkgs. Its stdenv is therefore not the one warmed above:
+          #
+          #   test-fs180-fs270-selector-relation-authority.sh
+          #     archived.inputs."network-compiler".path  ->  evaluated
+          #     builds ...-bash-5.3.tar.gz  (this repo's pin has 5.3p9)
+          #
+          # ONE stdenv per input, not every app: the expensive version of this was
+          # removed earlier for taking 19 minutes. Bounded by count and by wall clock,
+          # and a failure is a warning -- the test that needs it will say so by name.
+          stdenv_budget="${STDENV_BUDGET_SECONDS:-300}"
+          stdenv_done=0
+          stdenv_max="${STDENV_MAX_INPUTS:-4}"
+          if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
+            while read -r input_path; do
+              [[ -d "${input_path}" ]] || continue
+              [[ -f "${input_path}/flake.nix" ]] || continue
+              (( stdenv_done < stdenv_max )) || { echo "  input stdenv budget reached"; break; }
+              (( SECONDS < stdenv_budget )) || { echo "  input stdenv time budget reached"; break; }
+              # The input's OWN nixpkgs input, not its `packages`: network-compiler's
+              # flake exposes apps and lib and no packages at all, so asking it for a
+              # stdenv resolves nothing. Its nixpkgs input always exists.
+              input_drv="$(nix eval --raw --impure \
+                "let f = builtins.getFlake \"path:${input_path}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".stdenv.drvPath" 2>/dev/null \
+                || nix eval --raw --impure "path:${input_path}#packages.${system}.stdenv.drvPath" 2>/dev/null \
+                || true)"
+              [[ -n "${input_drv}" ]] || continue
+              if nix-store -r "${input_drv}" > /dev/null 2>&1; then
+                printf '%s\n' "${input_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
+                printf '  input stdenv realised: %s\n' "$(basename "${input_path}")"
+                stdenv_done=$((stdenv_done + 1))
+              fi
+            done < <(jq -r '[.. | .path? // empty] | unique | .[]' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)
+          fi
+          echo "PASS CACHE-STDENV-INPUTS: ${stdenv_done} input stdenv(s) realised"
+
           if (( failures != 0 )); then
             echo "::error::CACHE: ${failures} item(s) missing; the test failures below would be cache artefacts, not defects"
             exit 1
