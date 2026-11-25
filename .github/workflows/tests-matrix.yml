@@ -747,10 +747,32 @@ jobs:
           # realised through a trivial attribute, which builds the stdenv and the rest of
           # the closure the tests will actually use.
           sort -u -o "${RUNNER_TEMP}/all-input-paths.txt" "${RUNNER_TEMP}/all-input-paths.txt"
+          # BOUNDED, because realising a nixpkgs closure is minutes, not seconds.
+          #
+          # The first attempt at this walked every input and built each package set it
+          # found, which turned `list` into a 45-minute job (run 45609747223) -- a cost
+          # the matrix cannot pay to fix three tests. The inputs that matter are the
+          # ones the tests actually evaluate, and those are the ones this repository's
+          # own lock names; the rest of the graph is source that is already archived.
+          #
+          # So: at most REALISE_MAX package sets, and only inputs whose source carries a
+          # flake.nix (a nixpkgs source does; a plain source tree does not).
           SYSTEM_NAME="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          REALISE_MAX="${REALISE_MAX:-3}"
+          REALISE_BUDGET_SECONDS="${REALISE_BUDGET_SECONDS:-420}"
+          realised_count=0
           while read -r candidate; do
             [[ -d "${candidate}" ]] || continue
             [[ -f "${candidate}/flake.nix" ]] || continue
+            (( realised_count < REALISE_MAX )) || { echo "realise budget reached"; break; }
+            # A wall-clock guard as well: a single stdenv build can take longer than the
+            # whole rest of this job, and a warm that does not finish is worse than a
+            # warm that covered one input. Whatever is not realised still fails loudly
+            # in the test that needs it, which is the property this change preserves.
+            (( SECONDS < REALISE_BUDGET_SECONDS )) || {
+              echo "realise time budget (${REALISE_BUDGET_SECONDS}s) reached after ${realised_count}"
+              break
+            }
             # Only flakes that expose packages; a plain source tree has no flake.nix.
             # nixpkgs exposes `legacyPackages`; a small flake exposes `packages`. Try
             # both, and treat "neither" as "this input is not a package set", which is
@@ -764,6 +786,7 @@ jobs:
             done
             if [[ -n "${realised}" ]]; then
               echo "realised ${realised} of ${candidate}"
+              realised_count=$((realised_count + 1))
               printf '%s\n' "${candidate}" >> "${RUNNER_TEMP}/realised-inputs.txt"
             fi
           done < "${RUNNER_TEMP}/all-input-paths.txt"
