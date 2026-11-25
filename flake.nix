@@ -40,6 +40,41 @@
         );
     in
     {
+
+      # THE ENVIRONMENT THE TESTS NEED, DECLARED IN THE REPO-ROOT FLAKE.
+      #
+      # Every suite here shells out to nix, jq and git, and some use rg, ssh and
+      # python3. Until this existed those came from the runner image plus ad-hoc
+      # `curl`s in the workflow, so the environment was implicit: no derivation
+      # described it, nothing could cache it coherently, and each job re-fetched the
+      # same bytes.
+      #
+      # `nix develop` and `nix build .#devShells.<sys>.default` are the two consumers.
+      # CI reads the PATH that `nix print-dev-env` reports and exports it, so the tools
+      # a test runs are the ones declared here and nothing is installed outside it.
+      #
+      # Deliberately no `pkgs.nix`: CI installs its own Nix, and two versions evaluate
+      # the same flake to different derivations -- which silently breaks every cache.
+      # This flake's `forAllSystems` hands `f` an ATTRSET ({ system; pkgs; lib; }),
+      # not a bare system string, so the devShell destructures that instead of
+      # re-importing nixpkgs.
+      devShells = forAllSystems (
+        { pkgs, ... }:
+        {
+          default = pkgs.mkShell {
+            name = "network-tests";
+            packages = [
+              pkgs.git
+              pkgs.jq
+              pkgs.openssh
+              pkgs.python3
+              pkgs.ripgrep
+              pkgs.zstd
+            ];
+          };
+        }
+      );
+
       libBySystem = forAllSystems (
         {
           system,
