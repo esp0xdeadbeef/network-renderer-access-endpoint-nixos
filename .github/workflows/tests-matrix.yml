@@ -851,76 +851,50 @@ jobs:
           zstd -dc "${RUNNER_TEMP}/nix-store.nar.zst" | nix-store --import >"${RUNNER_TEMP}/imported-paths.txt"
           printf 'imported %s path(s)\n' "$(grep -c . "${RUNNER_TEMP}/imported-paths.txt")"
 
-      - name: "Warm this job's own app closure, as the test will resolve it"
+      # WARM THIS REPOSITORY'S APPS, WITH THE REFERENCE FORM THE TESTS USE.
+      #
+      # Two things this had to learn, both measured on network-compiler:
+      #
+      # 1. `path:$PWD`, NOT `$PWD`. The two produce different derivations because the
+      #    `path:` flake URL yields different sourceInfo, and the suites resolve
+      #    `path:${repo_root}#...`. A warm under the bare form built something no test
+      #    would ask for: 950 derivations rebuilt from source against a closed store.
+      #
+      # 2. WHICH apps is not a constant. This fleet names them compile, default,
+      #    render-openconfig, deploy-clab, compile-and-build-forwarding-model, ... and
+      #    four repositories declare none at all because they produce data, not
+      #    programs. So the list is READ from the flake, and "no apps" is a pass.
+      #
+      # `nix-store -r <drv>` realises the derivation AND its build inputs; `nix build`
+      # on the program path pulls neither.
+      - name: "Warm this repository's apps"
         shell: bash
         run: |
           set -uo pipefail
           system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          # No namespace, no root juggling: the discriminator turned out to be the flake
-          # REFERENCE FORM below, not the identity running it. Earlier runs compared root
-          # in `unshare` against the runner user and saw two derivations; that difference
-          # was `$PWD` versus `path:$PWD`, misattributed to the user.
-          as_test() { "$@"; }
-
-          # `path:$PWD`, NOT `$PWD`. Measured locally, same tree, same nix:
-          #
-          #   nix eval --impure "$PWD#apps.<sys>.compile.program"       -> apgm8dl0...
-          #   nix eval --impure "path:$PWD#apps.<sys>.compile.program"  -> imrlx70w...
-          #
-          # Two derivations, because the `path:` flake URL produces different sourceInfo
-          # from a bare directory argument -- and the test uses `path:${repo_root}#...`.
-          # That single character difference is why 950 derivations were rebuilt from
-          # source in run 45678523867 while this step had already built the app.
           flake_ref="path:${PWD}"
-          drv="$(as_test nix eval --raw --impure "${flake_ref}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || drv=""
-          if [[ -z "${drv}" ]]; then
-            echo "no compile app derivable here; the tests will say if they need one"
+          mapfile -t apps < <(nix eval --json --impure "${flake_ref}#apps.${system}" \
+            --apply builtins.attrNames 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+          if (( ${#apps[@]} == 0 )); then
+            echo "PASS WARM-APPS: this repository declares no apps; nothing to warm"
             exit 0
           fi
-          echo "compile app as the test resolves it: ${drv}"
-          # `nix-store -r <drv>`, NOT `nix build <program>`.
-          #
-          # The derivation is now the right one (run 45681668432 shows a single app drv
-          # on both sides), but realising it is a different question. `nix build` on the
-          # program path does not pull the derivation's BUILD inputs -- measured: the
-          # test still needed optparse-applicative and 950 others that the app links
-          # against at build time.
-          #
-          # `nix-store --realise` on the .drv builds the derivation AND everything
-          # required to build it, which is exactly the closure the test would need.
-          if [[ -n "${drv}" ]] && as_test nix-store -r "${drv}" > /dev/null; then
-            echo "PASS WARM-LOCAL-DEPS: build closure of ${drv} is present"
-          else
-            echo "::warning::the build closure of ${drv} could not be completed"
-          fi
+          warmed=0
+          for app in "${apps[@]}"; do
+            drv="$(nix eval --raw --impure "${flake_ref}#apps.${system}.${app}.program" \
+              --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || {
+              printf '  %-34s no derivation in its program string; skipped\n' "${app}"
+              continue
+            }
+            if nix-store -r "${drv}" > /dev/null 2>&1; then
+              printf '  %-34s realised\n' "${app}"
+              warmed=$((warmed + 1))
+            else
+              echo "::warning::app ${app} (${drv}) could not be realised"
+            fi
+          done
+          echo "PASS WARM-APPS: ${warmed} of ${#apps[@]} app(s) realised"
 
-      # WARM THIS JOB'S OWN APP -- AND AGAIN INSIDE THE NAMESPACE.
-      #
-      # The app derivation is computed from the flake source, and the test computes it
-      # as ROOT inside `sudo -n env PATH=... unshare -n`. Three runs measured a
-      # different derivation on each side (5vjl2hf8 / 2k7kmfb3, 9i2w9a93 / ni3s22q5),
-      # and every locally-reproducible explanation was ruled out: .git, untracked
-      # files, cwd, a foreign git repo, HOME, XDG_CACHE_HOME, safe.directory, and
-      # --impure with --no-warn-dirty all give the same drv here.
-      #
-      # So this step does what can be verified: it warms from the runner identity,
-      # BEFORE the store closes so the network is available. The step AFTER the store
-      # closes then asks the same question as root inside the namespace and reports
-      # whether the two agree, which is the one fact the logs have not yet stated.
-      # IS THE CACHE THE CAUSE? THIS STEP ANSWERS THAT, BEFORE ANY TEST RUNS.
-      #
-      # The environment is declared in flake.nix and prepared by the `list` job, then
-      # passed here as an artifact. This step checks the three things a test needs are
-      # already in the store:
-      #
-      #   1. the devShell's -env derivation (what `nix develop` constructs),
-      #   2. every binary that derivation puts on PATH,
-      #   3. the compile app the suites execute.
-      #
-      # If this fails, the cache is the cause and the tests are not worth reading. If it
-      # passes, a later failure is a defect in the test. That separation is the point of
-      # doing it as its own step rather than folding it into the run.
       - name: "Verify the cache: everything the tests need is already present"
         shell: bash
         run: |
@@ -967,16 +941,35 @@ jobs:
           # file inside an output exists; the question is whether the OUTPUT is present.
           # Resolve the derivation the same way the test does -- `path:` -- and look at
           # what it produces.
-          app_drv="$(nix eval --raw --impure "path:${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || app_drv=""
-          app_out="$(nix-store -q --outputs "${app_drv}" 2>/dev/null | head -1)" || app_out=""
-          if [[ -n "${app_out}" ]] && nix path-info "${app_out}" >/dev/null 2>&1; then
-            echo "PASS CACHE-APP: ${app_out}"
+          # EVERY app this flake declares, or none.
+          #
+          # Hardcoding `compile` was wrong: this fleet names its apps compile, default,
+          # render-openconfig, deploy-clab, ... and four repositories declare none at
+          # all because they produce data rather than programs. A check that assumes a
+          # name reports a cache failure for a repository that simply has no apps.
+          mapfile -t app_names < <(nix eval --json --impure "path:${PWD}#apps.${system}" \
+            --apply builtins.attrNames 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+          if (( ${#app_names[@]} == 0 )); then
+            echo "PASS CACHE-APP: this repository declares no apps; nothing to verify"
           else
-            echo "::error::CACHE-APP: the compile app output is NOT in the store"
-            echo "  derivation: ${app_drv:-<unresolved>}"
-            echo "  output:     ${app_out:-<unknown>}"
-            failures=$((failures + 1))
+            missing_apps=()
+            for app in "${app_names[@]}"; do
+              d="$(nix eval --raw --impure "path:${PWD}#apps.${system}.${app}.program" \
+                --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
+              o="$(nix-store -q --outputs "${d}" 2>/dev/null | head -1)" || o=""
+              if [[ -n "${o}" ]] && nix path-info "${o}" >/dev/null 2>&1; then
+                printf '  %-34s present\n' "${app}"
+              else
+                missing_apps+=("${app}:${o:-<no output>}")
+              fi
+            done
+            if (( ${#missing_apps[@]} == 0 )); then
+              echo "PASS CACHE-APP: all ${#app_names[@]} app output(s) in the store"
+            else
+              echo "::error::CACHE-APP: ${#missing_apps[@]} app output(s) NOT in the store"
+              printf '  %s\n' "${missing_apps[@]}"
+              failures=$((failures + 1))
+            fi
           fi
 
           # PIN `<nixpkgs>` FOR EVERY TEST IN THIS JOB, FROM THIS REPOSITORY'S LOCK.
