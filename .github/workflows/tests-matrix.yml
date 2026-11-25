@@ -512,6 +512,10 @@ jobs:
           : > "${RUNNER_TEMP}/app-drvs.txt"
           for app in "${apps[@]}"; do
             echo "::group::warm app ${app}"
+            # `path:$PWD`, not `$PWD`: the two produce different derivations, measured in
+            # this series, and the tests resolve `path:${repo_root}#...`. A warm that uses
+            # the bare form builds something no test will ever ask for.
+            #
             # `builtins.getFlake "path:$PWD"` reads the files as a plain directory and
             # sets no revision, while the tests run `nix run "$ROOT#compile"` on a git
             # checkout. `mkEvalApp` bakes `self.sourceInfo` into the app, so the two
@@ -522,7 +526,7 @@ jobs:
             #
             # So the warm step asks for the app the same way a test does: through the
             # flake reference `.#<app>`, from the repository root.
-            nix eval --raw "${PWD}#apps.${system}.${app}.program" \
+            nix eval --raw "path:${PWD}#apps.${system}.${app}.program" \
               --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' \
               > "${RUNNER_TEMP}/app-drv.txt" || {
               echo "::error::${app}: its program is not produced by a derivation"
@@ -553,268 +557,69 @@ jobs:
             echo "::endgroup::"
           done
 
-      # THE FLAKE INPUTS THE TESTS THEMSELVES FETCH.
+      # WARM THIS REPOSITORY'S OWN FLAKE INPUTS. NOBODY ELSE'S.
       #
-      # tests/test-emitter-provenance-repo-boundary.sh runs
-      #   nix flake archive --json "path:${repo_root}"
-      # which materialises every flake input into the store -- including the
-      # `github:esp0xdeadbeef/...` pins in flake.lock. With the store closed, an input
-      # that was never materialised here cannot be fetched there, and the test dies on
-      #   error: unable to download 'https://github.com/.../archive/<rev>.tar.gz'
-      # (run 45530546670). Running the same command once, here, is what makes the
-      # input closure part of the cache instead of part of the run.
-      - name: "Warm the flake inputs the provenance tests archive"
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! -f tests/test-emitter-provenance-repo-boundary.sh ]]; then
-            echo "no provenance test in this repository; nothing to archive"
-            exit 0
-          fi
-          # The inputs of THIS lock are not enough. A sibling pins this repository:
-          # network-labs' flake.lock names `network-compiler` at rev 5a8682f..., and the
-          # provenance test runs a compiler from a labs intent, which materialises THAT
-          # revision -- so the closed store refused it with
-          #   unable to download 'https://github.com/.../archive/5a8682fe....tar.gz'
-          # (run 45532698895, the three remaining failures).
-          #
-          # So every `github:esp0xdeadbeef/*` pin named by a sibling lock is materialised
-          # too. This is a fixed, lock-defined set, read from the sibling checkouts the
-          # job already has.
-          # Rather than run the sibling lock parser here, ask jq: every github pin owned
-          # by this account, from every sibling lock that is present.
-          for sibling_lock in ../*/flake.lock; do
-            [[ -f "${sibling_lock}" ]] || continue
-            # EVERY github pin, not just this account's. Measured: after limiting the
-            # scan to esp0xdeadbeef, three jobs still failed on a THIRD-PARTY pin --
-            #   unable to download 'https://github.com/openconfig/public/archive/f3443...'
-            # (run 45539512049) -- because openconfig/public is an input of every lock in
-            # this fleet. A pin is a pin; the owner says nothing about whether the tests
-            # will materialise it.
-            jq -r '.nodes[] | (.locked // {}) | select(.type == "github" and .rev != null) | "github:\(.owner)/\(.repo)/\(.rev)"' \
-              "${sibling_lock}" 2>/dev/null || true
-          done | sort -u | grep -v '^$' > "${RUNNER_TEMP}/sibling-github-refs.txt" || true
-          printf 'sibling github pins: %s\n' "$(wc -l < "${RUNNER_TEMP}/sibling-github-refs.txt")"
-          while read -r ref; do
-            [[ -n "${ref}" ]] || continue
-            echo "::group::materialise ${ref}"
-            # `flake prefetch`, NOT `flake archive`.
-            #
-            # `archive` walks the pin's OWN inputs and therefore wants to update the
-            # pin's lock file, which fails for an older revision whose lock no longer
-            # matches:
-            #   error: … while updating the lock file of flake 'github:.../5a8682f'
-            # -- and --no-update-lock-file does not avoid it (measured in run 45536566784).
-            #
-            # `prefetch` materialises exactly the revision named, into a store path, and
-            # walks no inputs. The tests fetch these refs the same way, so this is the
-            # matching primitive: same revision in, same store path out.
-            nix flake prefetch --json "${ref}" \
-              > "${RUNNER_TEMP}/prefetch.json" || {
-              echo "::error::a sibling pins ${ref} and it could not be materialised"
-              exit 1
-            }
-            store_path="$(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
-            # Recorded PER REF. The apps loop below is a separate loop, so reading
-            # prefetch.json there returned the LAST ref's path for every iteration and
-            # every revision reported "no apps" (run 45549346309).
-            printf '%s\t%s\n' "${ref}" "${store_path}" >> "${RUNNER_TEMP}/ref-paths.tsv"
-            printf '%s\n' "${store_path}" >> "${RUNNER_TEMP}/app-outs.txt"
-            echo "  ${store_path}"
-            echo "::endgroup::"
-          done < "${RUNNER_TEMP}/sibling-github-refs.txt"
-
-          # THE APPS OF THE PINNED REVISIONS, TOO.
-          #
-          # A provenance test compiles through a sibling's pinned compiler, and that
-          # revision's apps are its own derivations -- different from this repository's.
-          # Measured in run 45540528886: the warm job built z6acyg8v...-app.drv and the
-          # test then tried to build g1fbnn7v...-app.drv from source, which needs
-          # binutils-with-gold from ftpmirror.gnu.org. Seeing the source is not enough;
-          # the app the test executes has to be in the store.
-          #
-          # Every fleet-owned pin is warmed. That is up to 16 extra app builds, which is
-          # the price of a warm that is actually warm: the alternative measured out at
-          # a test building binutils from source at run time (run 45540528886). A
-          # revision without apps is not an error, and an app that fails to build is a
-          # warning here -- the test that needs it will fail and name the path, which is
-          # the signal this change exists to provide.
-          if [[ -s "${RUNNER_TEMP}/sibling-github-refs.txt" ]]; then
-            while read -r ref; do
-              [[ -n "${ref}" ]] || continue
-              [[ "${ref}" == github:esp0xdeadbeef/* ]] || continue
-              echo "::group::warm apps of ${ref}"
-              system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-              # A PINNED REVISION CAN HAVE NO flake.lock.
-              #
-              # Measured on network-compiler@5a8682f: three repositories gitignore
-              # flake.lock, so that revision ships none, and evaluating it fails while
-              # "updating the lock file" -- which needs the network, which the closed
-              # store refuses. That is why this step reported "no apps at ..." while the
-              # test that uses the same revision succeeded (run 45545298522).
-              #
-              # The source is copied out of the store, made writable, and given THIS
-              # repository's lock, so the pinned source evaluates with pins that already
-              # exist. Nix refuses to write into a store path, hence the copy.
-              sib_src="$(awk -F'\t' -v r="${ref}" '$1 == r { print $2 }' "${RUNNER_TEMP}/ref-paths.tsv")"
-              if [[ -z "${sib_src}" ]]; then
-                echo "::warning::no prefetched source recorded for ${ref}"
-                echo "::endgroup::"
-                continue
-              fi
-              sib_dir="${RUNNER_TEMP}/sib-src/$(echo "${ref}" | tr '/:' '__')"
-              rm -rf "${sib_dir}"
-              mkdir -p "$(dirname "${sib_dir}")"
-              cp -r "${sib_src}" "${sib_dir}"
-              chmod -R u+w "${sib_dir}"
-              if [[ ! -f "${sib_dir}/flake.lock" && -f flake.lock ]]; then
-                cp flake.lock "${sib_dir}/flake.lock"
-                echo "supplied this repository's lock: ${ref} ships none"
-              fi
-              if nix eval --json "path:${sib_dir}#apps.${system_name}" > "${RUNNER_TEMP}/sib-apps.json" 2>/dev/null; then
-                while read -r sib_app; do
-                  [[ -n "${sib_app}" ]] || continue
-                  sib_drv="$(nix eval --raw "path:${sib_dir}#apps.${system_name}.${sib_app}.program" \
-                    --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
-                  nix-store -r --add-root "${RUNNER_TEMP}/sib-roots/${sib_app}" "${sib_drv}" > /dev/null 2>&1 || {
-                    echo "::warning::${ref} app ${sib_app} did not build; if a test needs it, that test will say so"
-                    continue
-                  }
-                  nix-store -qR "${sib_drv}" >> "${RUNNER_TEMP}/sib-paths.txt"
-                  nix-store -q --outputs "${sib_drv}" 2>/dev/null | while read -r o; do
-                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/sib-paths.txt"
-                  done
-                done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/sib-apps.json")
-              else
-                echo "no apps at ${ref}"
-              fi
-              echo "::endgroup::"
-            done < "${RUNNER_TEMP}/sibling-github-refs.txt"
-            if [[ -s "${RUNNER_TEMP}/sib-paths.txt" ]]; then
-              sort -u -o "${RUNNER_TEMP}/sib-paths.txt" "${RUNNER_TEMP}/sib-paths.txt"
-              cat "${RUNNER_TEMP}/sib-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-              printf 'sibling app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/sib-paths.txt")"
-            fi
-          fi
-
-          nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
-          jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
-            >> /tmp/flake-input-paths.txt
-          cat /tmp/flake-input-paths.txt >> "${RUNNER_TEMP}/app-outs.txt"
-          printf 'flake inputs archived: %s\n' "$(wc -l < /tmp/flake-input-paths.txt)"
-
-          # THE FLAKE INPUTS' OWN APPS, NOT JUST THEIR SOURCES.
-          #
-          # `nix run "path:$PWD#compile"` evaluates this flake, which materialises the
-          # build closures of its inputs. Archiving those inputs fetched their SOURCES
-          # only, so a test that runs the compiler pulled network-labs' closure --
-          # ghc-9.10.3, binutils-with-gold -- and the closed store refused it
-          # (run 45563403679).
-          #
-          # network-labs does have apps of its own; building them here is what makes
-          # that closure part of the cache instead of part of the run.
-          labs_src="$(jq -r '.inputs["network-labs"].path // empty' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)"
-          if [[ -n "${labs_src}" && -d "${labs_src}" ]]; then
-            echo "::group::warm network-labs apps from ${labs_src}"
-            labs_system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-            if nix eval --json "path:${labs_src}#apps.${labs_system}" > "${RUNNER_TEMP}/labs-apps.json" 2>/dev/null; then
-              while read -r labs_app; do
-                [[ -n "${labs_app}" ]] || continue
-                labs_drv="$(nix eval --raw "path:${labs_src}#apps.${labs_system}.${labs_app}.program" \
-                  --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
-                if nix-store -r "${labs_drv}" > /dev/null 2>&1; then
-                  echo "  ${labs_app}: ${labs_drv}"
-                  nix-store -qR "${labs_drv}" >> "${RUNNER_TEMP}/labs-paths.txt"
-                  nix-store -q --outputs "${labs_drv}" 2>/dev/null | while read -r o; do
-                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/labs-paths.txt"
-                  done
-                else
-                  echo "::warning::network-labs app ${labs_app} did not build"
-                fi
-              done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/labs-apps.json")
-            else
-              echo "no apps at network-labs"
-            fi
-            echo "::endgroup::"
-            if [[ -s "${RUNNER_TEMP}/labs-paths.txt" ]]; then
-              sort -u -o "${RUNNER_TEMP}/labs-paths.txt" "${RUNNER_TEMP}/labs-paths.txt"
-              cat "${RUNNER_TEMP}/labs-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-              printf 'network-labs paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/labs-paths.txt")"
-            fi
-          fi
-
-      # THE PICNED INPUT'S OWN APP, BUILT.
+      # This step used to scan `../*/flake.lock` -- every sibling repository's lock --
+      # and then prefetch and BUILD every github pin found across the whole fleet. So a
+      # run of network-compiler warmed network-labs, the renderers, the forwarding and
+      # control-plane models and the schema: minutes of building other repositories'
+      # closures, for a test that only ever evaluates THIS one.
       #
-      # The provenance test runs `nix flake archive "path:${repo_root}"`, whose
-      # `network-labs` entry pins ITS OWN network-compiler at 5a8682f. Archiving labs'
-      # sources is not enough: evaluating through that revision needs that revision's
-      # closure, and the build that failed was 8plxzydy...-app.drv, which matches none
-      # of this repository's apps.
+      # That was mine, added while chasing a single provenance case, and never scoped.
       #
-      # Measured locally: the pinned revision's compile app resolves to
-      # mx20bd9g...-app.drv -- a genuinely different derivation from this
-      # repository's. So each pinned revision is warmed for the app the tests run,
-      # with a lock supplied when the revision ships none.
-      - name: "Warm the pinned compilers the tests evaluate through"
+      # `nix flake archive "path:$PWD"` is the honest bound: it materialises the inputs
+      # THIS repository's lock names, which is exactly what evaluating this flake can
+      # reach when the store is closed. If a particular test needs an input this lock
+      # does not pin, that is a fact about the test and it will say so by name.
+      - name: "Warm this repository's own flake inputs"
         shell: bash
         run: |
           set -uo pipefail
-          if [[ ! -s "${RUNNER_TEMP}/ref-paths.tsv" ]]; then
-            echo "no prefetched refs recorded; nothing to warm"
-            exit 0
+          if nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json" 2>"${RUNNER_TEMP}/archive.err"; then
+            count="$(jq -r '[.. | .path? // empty] | unique | length' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || echo 0)"
+            echo "PASS WARM-INPUTS: ${count} input source(s) from this repository's lock"
+            jq -r '[.. | .path? // empty] | unique | .[]' "${RUNNER_TEMP}/flake-archive.json" \
+              >> "${RUNNER_TEMP}/app-outs.txt" 2>/dev/null || true
+          else
+            echo "::warning::this repository's inputs could not be archived"
+            sed 's/^/  /' "${RUNNER_TEMP}/archive.err" >&2 || true
           fi
-          system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          : > "${RUNNER_TEMP}/pinned-paths.txt"
-          while IFS=$'\t' read -r ref src_path; do
-            [[ -n "${ref}" && -n "${src_path}" ]] || continue
-            [[ "${ref}" == github:esp0xdeadbeef/network-compiler/* ]] || continue
-            echo "::group::pinned compiler app ${ref}"
-            work="${RUNNER_TEMP}/pinned/$(echo "${ref}" | tr '/:' '__')"
-            rm -rf "${work}"
-            mkdir -p "$(dirname "${work}")"
-            cp -r "${src_path}" "${work}"
-            chmod -R u+w "${work}"
-            # THE PINNED REVISION SHIPS NO LOCK, SO ITS APP IDENTITY IS NOT STABLE.
-            #
-            # Three repositories gitignore flake.lock, so the pinned source has none.
-            # Evaluating it creates one from whatever resolves AT THAT MOMENT, so the
-            # app derivation differs between the warm and the test even in the same job
-            # -- measured: the warm built 0sk992zv...-app, and the test then wanted
-            # 0p9fvblx...-app (run 45597803973), with an empty aeson/ShellCheck closure
-            # behind it.
-            #
-            # A lock taken from the SIBLING's own flake.lock for this repository is
-            # stable: it is the same file on every run. That is what is copied here.
-            if [[ ! -f "${work}/flake.lock" ]]; then
-              supplied=""
-              for cand in ../network-labs/flake.lock ../network-compiler/flake.lock flake.lock; do
-                [[ -f "${cand}" ]] || continue
-                supplied="${cand}"
-                break
-              done
-              if [[ -n "${supplied}" ]]; then
-                cp "${supplied}" "${work}/flake.lock"
-                echo "supplied ${supplied} as the lock for ${ref}"
-              fi
+
+      # PREPARE THE CACHE: THE TEST ENVIRONMENT, DECLARED IN flake.nix.
+      #
+      # `nix build .#devShells.<sys>.default` builds only the shell MARKER. What
+      # `nix develop` actually constructs -- and what the test steps use as their shell
+      # -- is a separate `<name>-env` derivation. Warming the marker and not the env is
+      # how a run ends up bootstrapping gcc inside a step that should be well-cached.
+      #
+      # `nix print-dev-env` forces exactly that derivation, so it is what runs here.
+      # This step is deliberately SEPARATE from the tests: if it fails, the cause is the
+      # cache, and nothing downstream has to be read to know that.
+      - name: "Prepare the cache: the declared test environment"
+        id: prepare_env
+        shell: bash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          if nix print-dev-env ".#devShells.${system}.default" > "${RUNNER_TEMP}/dev-env.txt" 2>"${RUNNER_TEMP}/dev-env.err"; then
+            shell_path="$(grep -m1 "^PATH='" "${RUNNER_TEMP}/dev-env.txt" | sed "s/^PATH='//; s/'$//")"
+            echo "PASS PREPARE-ENV: the devShell environment is built"
+            printf '  PATH entries: %s\n' "$(printf '%s' "${shell_path}" | tr ':' '\n' | grep -c . || true)"
+            printf '%s\n' "${shell_path}" > "${RUNNER_TEMP}/dev-shell-path.txt"
+            # The env derivation is what has to travel: the shell marker alone does not
+            # contain it. Its closure is every tool the suites run.
+            env_drv="$(nix eval --raw --impure ".#devShells.${system}.default.drvPath" 2>/dev/null)" || env_drv=""
+            if [[ -n "${env_drv}" ]]; then
+              printf '%s\n' "${env_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
+              echo "  env derivation: ${env_drv}"
             fi
-            # Resolve the app EXACTLY as the test does: `path:` + `--impure`, and through
-          # `nix run`'s own installable, so no flag difference can produce a different
-          # derivation. The test invokes
-          #   nix run --no-warn-dirty --no-write-lock-file "path:${repo_root}#compile"
-          # so that is what is resolved and built here.
-          pinned_prog="$(nix eval --raw --impure "path:${work}#apps.${system_name}.compile.program" 2>/dev/null)" || pinned_prog=""
-            if [[ -n "${pinned_prog}" ]] && nix build --no-link "${pinned_prog}" > /dev/null 2>&1; then
-              echo "PASS WARM-PINNED-APP: ${ref} -> ${pinned_prog}"
-              nix-store -qR "${pinned_prog}" >> "${RUNNER_TEMP}/pinned-paths.txt" 2>/dev/null || true
-            else
-              echo "::warning::pinned compiler app for ${ref} could not be built"
-            fi
-            echo "::endgroup::"
-          done < "${RUNNER_TEMP}/ref-paths.tsv"
-          if [[ -s "${RUNNER_TEMP}/pinned-paths.txt" ]]; then
-            sort -u -o "${RUNNER_TEMP}/pinned-paths.txt" "${RUNNER_TEMP}/pinned-paths.txt"
-            cat "${RUNNER_TEMP}/pinned-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
-            printf 'pinned app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/pinned-paths.txt")"
+            for d in ${shell_path//:/ }; do
+              [[ -d "${d}/.." ]] && printf '%s\n' "$(dirname "${d}")" >> "${RUNNER_TEMP}/app-outs.txt"
+            done
+          else
+            echo "::error::CACHE: .#devShells.${system}.default could not be built"
+            sed 's/^/  /' "${RUNNER_TEMP}/dev-env.err" >&2 || true
+            exit 1
           fi
 
       - name: "Export the store closure for the test jobs"
@@ -852,13 +657,6 @@ jobs:
             done
             echo "flake inputs: ${#finputs[@]}"
           fi
-          if [[ -s "${RUNNER_TEMP}/labs-paths.txt" ]]; then
-            mapfile -t lp < "${RUNNER_TEMP}/labs-paths.txt"
-            for lp_one in "${lp[@]}"; do
-              nix-store -qR "${lp_one}" >> /tmp/store-paths.txt
-            done
-            echo "network-labs closure: ${#lp[@]}"
-          fi
           if [[ -s "${RUNNER_TEMP}/app-outs.txt" ]]; then
             mapfile -t outs < "${RUNNER_TEMP}/app-outs.txt"
             for out in "${outs[@]}"; do
@@ -880,7 +678,19 @@ jobs:
             exit 1
           fi
           mapfile -t paths < /tmp/store-paths.txt
-          nix-store --export "${paths[@]}" | zstd -19 -T0 -o "${RUNNER_TEMP}/nix-store.nar.zst"
+          # -3, NOT -19. Measured on a 704 MB export of a real closure, 4 threads:
+          #
+          #   zstd -3  -T4:   3 s -> 226 MB
+          #   zstd -9  -T4:  11 s -> 193 MB
+          #   zstd -19 -T4: 265 s -> 171 MB
+          #
+          # -19 costs 262 extra seconds to save 55 MB, on an artifact with
+          # retention-days: 1. Worse, it stalls on the larger exports this actually
+          # produces (1.5 GiB+), which is the export the tests were waiting on.
+          #
+          # The default level is the right trade: compression is not what this artifact
+          # is for, delivering a store is.
+          nix-store --export "${paths[@]}" | zstd -3 -T0 -o "${RUNNER_TEMP}/nix-store.nar.zst"
           ls -lh "${RUNNER_TEMP}/nix-store.nar.zst"
 
       - uses: actions/upload-artifact@v4
@@ -1016,6 +826,50 @@ jobs:
           zstd -dc "${RUNNER_TEMP}/nix-store.nar.zst" | nix-store --import >"${RUNNER_TEMP}/imported-paths.txt"
           printf 'imported %s path(s)\n' "$(grep -c . "${RUNNER_TEMP}/imported-paths.txt")"
 
+      - name: "Warm this job's own app closure, as the test will resolve it"
+        shell: bash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          # No namespace, no root juggling: the discriminator turned out to be the flake
+          # REFERENCE FORM below, not the identity running it. Earlier runs compared root
+          # in `unshare` against the runner user and saw two derivations; that difference
+          # was `$PWD` versus `path:$PWD`, misattributed to the user.
+          as_test() { "$@"; }
+
+          # `path:$PWD`, NOT `$PWD`. Measured locally, same tree, same nix:
+          #
+          #   nix eval --impure "$PWD#apps.<sys>.compile.program"       -> apgm8dl0...
+          #   nix eval --impure "path:$PWD#apps.<sys>.compile.program"  -> imrlx70w...
+          #
+          # Two derivations, because the `path:` flake URL produces different sourceInfo
+          # from a bare directory argument -- and the test uses `path:${repo_root}#...`.
+          # That single character difference is why 950 derivations were rebuilt from
+          # source in run 45678523867 while this step had already built the app.
+          flake_ref="path:${PWD}"
+          drv="$(as_test nix eval --raw --impure "${flake_ref}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || drv=""
+          if [[ -z "${drv}" ]]; then
+            echo "no compile app derivable here; the tests will say if they need one"
+            exit 0
+          fi
+          echo "compile app as the test resolves it: ${drv}"
+          # `nix-store -r <drv>`, NOT `nix build <program>`.
+          #
+          # The derivation is now the right one (run 45681668432 shows a single app drv
+          # on both sides), but realising it is a different question. `nix build` on the
+          # program path does not pull the derivation's BUILD inputs -- measured: the
+          # test still needed optparse-applicative and 950 others that the app links
+          # against at build time.
+          #
+          # `nix-store --realise` on the .drv builds the derivation AND everything
+          # required to build it, which is exactly the closure the test would need.
+          if [[ -n "${drv}" ]] && as_test nix-store -r "${drv}" > /dev/null; then
+            echo "PASS WARM-LOCAL-DEPS: build closure of ${drv} is present"
+          else
+            echo "::warning::the build closure of ${drv} could not be completed"
+          fi
+
       # WARM THIS JOB'S OWN APP -- AND AGAIN INSIDE THE NAMESPACE.
       #
       # The app derivation is computed from the flake source, and the test computes it
@@ -1029,100 +883,83 @@ jobs:
       # BEFORE the store closes so the network is available. The step AFTER the store
       # closes then asks the same question as root inside the namespace and reports
       # whether the two agree, which is the one fact the logs have not yet stated.
-      - name: "Warm this job's own app closure"
+      # IS THE CACHE THE CAUSE? THIS STEP ANSWERS THAT, BEFORE ANY TEST RUNS.
+      #
+      # The environment is declared in flake.nix and prepared by the `list` job, then
+      # passed here as an artifact. This step checks the three things a test needs are
+      # already in the store:
+      #
+      #   1. the devShell's -env derivation (what `nix develop` constructs),
+      #   2. every binary that derivation puts on PATH,
+      #   3. the compile app the suites execute.
+      #
+      # If this fails, the cache is the cause and the tests are not worth reading. If it
+      # passes, a later failure is a defect in the test. That separation is the point of
+      # doing it as its own step rather than folding it into the run.
+      - name: "Verify the cache: everything the tests need is already present"
         shell: bash
         run: |
           set -uo pipefail
           system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          drv="$(nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || drv=""
-          if [[ -z "${drv}" ]]; then
-            echo "no compile app derivable here; the tests will say if they need one"
-            exit 0
-          fi
-          echo "runner-user compile app: ${drv}"
-          prog="$(nix eval --raw "${PWD}#apps.${system}.compile.program" 2>/dev/null)" || prog=""
-          # The test resolves through `nix run --no-warn-dirty --no-write-lock-file`,
-          # which implies --impure. Ask the same way and report the drv, so a flag
-          # difference cannot hide between the warm and the run.
-          test_style_drv="$(nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || test_style_drv=""
-          echo "test-style compile app: ${test_style_drv}"
-          if [[ -n "${prog}" ]] && nix build --no-link "${prog}" > /dev/null 2>&1; then
-            echo "PASS WARM-LOCAL-DEPS: build closure of ${prog} is present"
-          else
-            echo "::warning::the build closure of ${drv} could not be completed"
-          fi
-          printf '%s\n' "${drv}" > "${RUNNER_TEMP}/warmed-drv.txt"
+          failures=0
 
-      # THE STORE IS CLOSED FROM HERE DOWN.
-      #
-      # "The cache is hitting" was true for the /nix tarball and false for what the
-      # tests do with it: a test builds its own derivation, and with a cache hit but
-      # no closure the substitution is a network fetch from cache.nixos.org that no
-      # step reported. So the network is removed rather than measured:
-      #
-      #   substituters =            no substituter to fetch from
-      #   builders      =           no remote builder to offload to
-      #   --offline                 fail rather than resolve a missing path
-      #   flake-registry            no HTTP registry lookup
-      #
-      # `--offline` alone is not enough: it still consults configured substituters
-      # when they are reachable, so the substituter list is emptied as well. Both,
-      # then assert, then run.
-      #
-      # This is a tripwire, not a preference. If a test needs something the warm job
-      # did not anticipate, it fails HERE, with the path it wanted, instead of
-      # silently downloading 111 MiB per job and reporting green.
-      - name: "Close the store: no substituters, no network"
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Nix has no `substituters` ENVIRONMENT variable. Lines like
-          # `substituters =` in $GITHUB_ENV are not settings a Nix process ever reads,
-          # and `substituters ` is not even a valid environment name. The settings live
-          # in nix.conf, and NIX_CONFIG is appended to it, so the closed configuration
-          # goes to both: NIX_CONFIG for this step and every later one, /etc/nix/nix.conf
-          # for a `nix` that does not inherit this environment (a test that re-execs
-          # through sudo, for instance).
+          if nix print-dev-env ".#devShells.${system}.default" > "${RUNNER_TEMP}/dev-env.txt" 2>"${RUNNER_TEMP}/dev-env.err"; then
+            echo "PASS CACHE-ENV: the devShell environment is in the store"
+            # AND HAND ITS PATH TO THE LATER STEPS.
+            #
+            # `nix develop -c bash` was the documented way to run a step in a flake's
+            # environment, and it does not work here: it constructs a `network-tests-env`
+            # derivation that `print-dev-env` never names, so the artifact cannot contain
+            # it and the closed store bootstraps 151 derivations instead
+            # (run 45670950104: PASS CACHE-ENV at line 296, 151 derivations at 693).
+            #
+            # print-dev-env IS satisfied by the artifact, so its PATH is what the tests
+            # get. Exported here rather than in a later step because this one runs
+            # BEFORE the store closes and before the offline wrapper is installed --
+            # the same conditions under which it was proven to work.
+            shell_path="$(grep -m1 "^PATH='" "${RUNNER_TEMP}/dev-env.txt" | sed "s/^PATH='//; s/'$//")"
+            if [[ -n "${shell_path}" ]]; then
+              added=0
+              for d in ${shell_path//:/ }; do
+                [[ -d "${d}" ]] || continue
+                printf '%s\n' "${d}" >> "$GITHUB_PATH"
+                added=$((added + 1))
+              done
+              echo "PASS CACHE-PATH: ${added} PATH entries exported from the flake's devShell"
+            else
+              echo "::error::CACHE-PATH: print-dev-env produced no PATH"
+              failures=$((failures + 1))
+            fi
+          else
+            echo "::error::CACHE-ENV: .#devShells.${system}.default is NOT in the store"
+            sed 's/^/  /' "${RUNNER_TEMP}/dev-env.err" >&2 || true
+            failures=$((failures + 1))
+          fi
+
+          # THE DERIVATION'S OUTPUT, not the program path inside it.
           #
-          # Built line by line: a YAML block scalar would carry this file's indentation
-          # into the value, and Nix would read "          substituters" as a name.
-          closed_config="$(printf '%s\n' \
-            'substituters =' \
-            'extra-substituters =' \
-            'builders =' \
-            'builders-use-substitutes = false' \
-            'flake-registry =' \
-            'experimental-features = nix-command flakes')"
-          {
-            echo 'NIX_CONFIG<<__CLOSED_CONFIG__'
-            printf '%s\n' "${closed_config}"
-            echo '__CLOSED_CONFIG__'
-          } >> "$GITHUB_ENV"
-          printf '%s\n' "${closed_config}" | sudo tee -a /etc/nix/nix.conf >/dev/null
-          export NIX_CONFIG="${closed_config}"
-          # Asserted, not assumed: measured here, these lines empty both lists, and
-          # `nix eval` of this flake still works with them set.
-          printf 'substituters: [%s]\nbuilders: [%s]\n' \
-            "$(nix config show substituters)" "$(nix config show builders)"
-          if [[ -n "$(nix config show substituters | tr -d '[:space:]')" ]]; then
-            echo "::error::substituters are still configured; a missing path would be downloaded"
+          # Checking `nix path-info "$prog"` where prog is `<out>/bin/app` asks whether a
+          # file inside an output exists; the question is whether the OUTPUT is present.
+          # Resolve the derivation the same way the test does -- `path:` -- and look at
+          # what it produces.
+          app_drv="$(nix eval --raw --impure "path:${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || app_drv=""
+          app_out="$(nix-store -q --outputs "${app_drv}" 2>/dev/null | head -1)" || app_out=""
+          if [[ -n "${app_out}" ]] && nix path-info "${app_out}" >/dev/null 2>&1; then
+            echo "PASS CACHE-APP: ${app_out}"
+          else
+            echo "::error::CACHE-APP: the compile app output is NOT in the store"
+            echo "  derivation: ${app_drv:-<unresolved>}"
+            echo "  output:     ${app_out:-<unknown>}"
+            failures=$((failures + 1))
+          fi
+
+          if (( failures != 0 )); then
+            echo "::error::CACHE: ${failures} item(s) missing; the test failures below would be cache artefacts, not defects"
             exit 1
           fi
+          echo "PASS CACHE: the cache is complete, so any failure from here is the test"
 
-      # ROOT'S ANSWER, STATED IN THE LOG.
-      #
-      # This runs after the store is closed, so it cannot build anything -- it only
-      # resolves, offline, the derivation root will ask for, and prints it beside the
-      # one the warm built. If they differ, this line says so before the test fails,
-      # which turns the next run's log into the evidence that has been missing.
-      # `--offline` is a FLAG, not a setting, and the suites shell out to bare `nix`
-      # 200+ times (`nix run`, `nix build`, `nix flake archive`) in ways no NIX_CONFIG
-      # can cover. A wrapper on PATH is the only place that catches all of them: every
-      # `nix` invocation becomes `nix --offline <args>` unless the caller already said
-      # `--offline`. With substituters emptied above, a missing path is now an error
-      # that names the path, not a silent download.
       # A NETWORK NAMESPACE, NOT JUST A FLAG.
       #
       # Measured on the runner image: `nix --offline` does NOT block flake INPUT
@@ -1237,39 +1074,55 @@ jobs:
           fi
           echo "PASS OFFLINE-NAMESPACE: no network, and Nix reports it"
 
-      # ROOTLESS PODMAN, THE OPTION THAT DOES NOT DEPEND ON THE HOST'S NAMESPACE POLICY.
-      #
-      # `sudo -n unshare -n` works on today's runner images. It is still a root
-      # namespace created by a privileged helper, and a runner image that stops granting
-      # it would turn every test job red for a reason unrelated to the commit. Rootless
-      # podman gives the same guarantee with a different failure mode: measured here,
-      # `podman run --network=none` has no route AND no resolver --
-      #
-      #   wget: bad address 'cache.nixos.org'
-      #
-      # which is a stronger statement than "unshare succeeded", because it proves the
-      # fetcher cannot even resolve a name.
-      #
-      # Recorded, not required: a repository whose tests do not run inside a container
-      # still gets the namespace. When podman is usable, NIX_CONTAINER_NETNS names the
-      # command the run step should wrap tests in, and the probe below prefers it.
-      - name: "Compare the warmed derivation with the one root resolves"
+      - name: "Close the store: no substituters, no network"
         shell: bash
         run: |
-          set -uo pipefail
-          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-          warmed="$(cat "${RUNNER_TEMP}/warmed-drv.txt" 2>/dev/null || true)"
-          root_drv="$(${NIX_NETNS:?} nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
-            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || root_drv=""
-          echo "warmed (runner): ${warmed:-<none>}"
-          echo "root resolves:   ${root_drv:-<none>}"
-          if [[ -n "${warmed}" && "${warmed}" == "${root_drv}" ]]; then
-            echo "PASS WARM-IDENTITY: the derivation is the same for both identities"
-          else
-            echo "::error::the derivation root resolves differs from the warmed one; this is why the test rebuilds"
+          set -euo pipefail
+          # Nix has no `substituters` ENVIRONMENT variable. Lines like
+          # `substituters =` in $GITHUB_ENV are not settings a Nix process ever reads,
+          # and `substituters ` is not even a valid environment name. The settings live
+          # in nix.conf, and NIX_CONFIG is appended to it, so the closed configuration
+          # goes to both: NIX_CONFIG for this step and every later one, /etc/nix/nix.conf
+          # for a `nix` that does not inherit this environment (a test that re-execs
+          # through sudo, for instance).
+          #
+          # Built line by line: a YAML block scalar would carry this file's indentation
+          # into the value, and Nix would read "          substituters" as a name.
+          closed_config="$(printf '%s\n' \
+            'substituters =' \
+            'extra-substituters =' \
+            'builders =' \
+            'builders-use-substitutes = false' \
+            'flake-registry =' \
+            'experimental-features = nix-command flakes')"
+          {
+            echo 'NIX_CONFIG<<__CLOSED_CONFIG__'
+            printf '%s\n' "${closed_config}"
+            echo '__CLOSED_CONFIG__'
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "${closed_config}" | sudo tee -a /etc/nix/nix.conf >/dev/null
+          export NIX_CONFIG="${closed_config}"
+          # Asserted, not assumed: measured here, these lines empty both lists, and
+          # `nix eval` of this flake still works with them set.
+          printf 'substituters: [%s]\nbuilders: [%s]\n' \
+            "$(nix config show substituters)" "$(nix config show builders)"
+          if [[ -n "$(nix config show substituters | tr -d '[:space:]')" ]]; then
+            echo "::error::substituters are still configured; a missing path would be downloaded"
             exit 1
           fi
 
+      # ROOT'S ANSWER, STATED IN THE LOG.
+      #
+      # This runs after the store is closed, so it cannot build anything -- it only
+      # resolves, offline, the derivation root will ask for, and prints it beside the
+      # one the warm built. If they differ, this line says so before the test fails,
+      # which turns the next run's log into the evidence that has been missing.
+      # `--offline` is a FLAG, not a setting, and the suites shell out to bare `nix`
+      # 200+ times (`nix run`, `nix build`, `nix flake archive`) in ways no NIX_CONFIG
+      # can cover. A wrapper on PATH is the only place that catches all of them: every
+      # `nix` invocation becomes `nix --offline <args>` unless the caller already said
+      # `--offline`. With substituters emptied above, a missing path is now an error
+      # that names the path, not a silent download.
       - name: "Check rootless podman as a fallback sandbox"
         shell: bash
         run: |
@@ -1418,50 +1271,37 @@ jobs:
       # Nix store copies the binary but not its closure, and the copied jq failed with
       # "cannot execute: required file not found" (it loads libjq.so.1 from a store
       # path the next job does not have). A store path is not a portable binary.
-      - name: "Install the tools this test uses"
+      # NO TOOL IS INSTALLED OUTSIDE flake.nix.
+      #
+      # This step used to ensure jq from the image, download ripgrep 2.5 MB from GitHub
+      # releases, and fetch sops (45 MB) and yq (10 MB) for the tests that named them.
+      # None of it was declared, so none of it could be cached: the environment was
+      # implicit and every job re-fetched it.
+      #
+      # The tools now come from `.#devShells.<system>.default`, which is the repo-root
+      # flake's declaration of exactly what the suites invoke (measured: nix 501, jq 197,
+      # git 84, ssh 13, python3 3, rg 2). The run step below uses that shell, so there is
+      # nothing to install and nothing to put on PATH by hand.
+      #
+      # This step only ASSERTS that the declaration holds, and it does so inside the same
+      # shell the tests run in -- so a missing tool fails here, named, instead of midway
+      # through a suite.
+      - name: "Assert the flake declares every tool the tests use"
         shell: bash
-        env:
-          TEST_NAME: ${{ matrix.test }}
         run: |
           set -euo pipefail
-          command -v jq >/dev/null || { echo "jq is missing from the runner image" >&2; exit 1; }
-
-          # Measured: ripgrep is NOT on the ubuntu image either (job 138861088165's
-          # successor died with "ripgrep is missing from the runner image"). The musl
-          # binary is 2.5 MB and static, so it needs no apt and no store closure.
-          # ripgrep is 2.5 MB and the same bytes for every job, so it lives in a
-          # cached directory instead of being downloaded 288 times per sweep.
-          if [[ ! -x "${HOME}/.local/bin/rg" ]] && ! command -v rg >/dev/null; then
-            # The archive has no "./" prefix on its members; asking tar for
-            # "./ripgrep-.../rg" fails with "Not found in archive".
-            mkdir -p "${HOME}/.local/bin"
-            rg_unpack="$(mktemp -d)"
-            curl -fsSL --retry 3 \
-              https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
-              | tar -xz -C "${rg_unpack}" --strip-components=1 \
-                  "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg"
-            install -m 0755 "${rg_unpack}/rg" "${HOME}/.local/bin/rg"
-          fi
-          printf '%s\n' "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-          rg --version | head -1
-
-          # Matrix values come from filenames, so they are read from the environment,
-          # never spliced into the script text.
-          test_path="tests/${TEST_NAME}"
-          uses() {
-            grep -rqs -- "$1" "${test_path}" "tests/lib/$(basename "${test_path}" .sh)" 2>/dev/null
-          }
-          if uses sops; then
-            curl -fsSL --retry 3 -o /usr/local/bin/sops \
-              https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64
-            chmod +x /usr/local/bin/sops
-            sops --version
-          fi
-          if uses yq; then
-            curl -fsSL --retry 3 -o /usr/local/bin/yq \
-              https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-            chmod +x /usr/local/bin/yq
-            yq --version
+          missing=0
+          for tool in nix jq git rg ssh python3; do
+            if command -v "${tool}" >/dev/null; then
+              printf '  %-8s %s\n' "${tool}" "$(command -v "${tool}")"
+            else
+              printf '  %-8s MISSING\n' "${tool}"
+              missing=1
+            fi
+          done
+          if (( missing != 0 )); then
+            echo "::error::.#devShells.<system>.default does not provide a tool the suites call"
+            exit 1
           fi
 
       # The suites resolve sibling repositories as ../network-*, the developer
