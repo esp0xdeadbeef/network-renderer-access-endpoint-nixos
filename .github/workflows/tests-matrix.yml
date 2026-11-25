@@ -583,7 +583,11 @@ jobs:
           while read -r ref; do
             [[ -n "${ref}" ]] || continue
             echo "::group::materialise ${ref}"
-            nix flake archive --json "${ref}" >/dev/null || {
+            # --no-update-lock-file: an older pinned revision carries a lock that
+            # today's Nix wants to rewrite, and rewriting it would reach the network
+            # for inputs the pin itself does not carry. Measured: without this flag the
+            # step died "while updating the lock file of flake 'github:.../5a8682f'".
+            nix flake archive --json --no-update-lock-file "${ref}" >/dev/null || {
               echo "::error::a sibling pins ${ref} and it could not be materialised"
               exit 1
             }
