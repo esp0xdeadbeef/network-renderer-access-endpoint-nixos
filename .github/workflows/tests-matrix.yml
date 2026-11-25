@@ -572,6 +572,16 @@ jobs:
             echo "no provenance test in this repository; nothing to archive"
             exit 0
           fi
+          # The inputs of THIS lock are not enough. A sibling pins this repository:
+          # network-labs' flake.lock names `network-compiler` at rev 5a8682f..., and the
+          # provenance test runs a compiler from a labs intent, which materialises THAT
+          # revision -- so the closed store refused it with
+          #   unable to download 'https://github.com/.../archive/5a8682fe....tar.gz'
+          # (run 45532698895, the three remaining failures).
+          #
+          # So every `github:esp0xdeadbeef/*` pin named by a sibling lock is materialised
+          # too. This is a fixed, lock-defined set, read from the sibling checkouts the
+          # job already has.
           # Rather than run the sibling lock parser here, ask jq: every github pin owned
           # by this account, from every sibling lock that is present.
           for sibling_lock in ../*/flake.lock; do
@@ -636,12 +646,17 @@ jobs:
               [[ "${ref}" == github:esp0xdeadbeef/* ]] || continue
               echo "::group::warm apps of ${ref}"
               system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
-              # A PINNED REVISION CAN HAVE NO flake.lock. Measured on
-              # network-compiler@5a8682f: three repositories gitignore flake.lock, so that
-              # revision ships none, and evaluating it fails "while updating the lock
-              # file" -- which needs the network the closed store refuses. The source is
-              # copied out of the store (Nix will not write into a store path) and given
-              # this repository's lock, whose pins the warm job has already materialised.
+              # A PINNED REVISION CAN HAVE NO flake.lock.
+              #
+              # Measured on network-compiler@5a8682f: three repositories gitignore
+              # flake.lock, so that revision ships none, and evaluating it fails while
+              # "updating the lock file" -- which needs the network, which the closed
+              # store refuses. That is why this step reported "no apps at ..." while the
+              # test that uses the same revision succeeded (run 45545298522).
+              #
+              # The source is copied out of the store, made writable, and given THIS
+              # repository's lock, so the pinned source evaluates with pins that already
+              # exist. Nix refuses to write into a store path, hence the copy.
               sib_src="$(awk -F'\t' -v r="${ref}" '$1 == r { print $2 }' "${RUNNER_TEMP}/ref-paths.tsv")"
               if [[ -z "${sib_src}" ]]; then
                 echo "::warning::no prefetched source recorded for ${ref}"
@@ -683,12 +698,81 @@ jobs:
             fi
           fi
 
+          # Walk the WHOLE input graph, not just this lock's root inputs.
+          #
+          # `nix flake archive "path:$PWD"` archives the root inputs. A transitive one
+          # is missed, and a missed input is not a missing download: it is a COLD
+          # nixpkgs, whose evaluation pulls the whole bootstrap chain. Measured in
+          # network-compiler run 45603526137, FS-100-HDS-010-SDS-010-SMS-030:
+          #
+          #   these 993 derivations will be built:
+          #     /nix/store/...-bootstrap-tools.tar.xz.drv
+          #     /nix/store/...-bootstrap-stage0-stdenv-linux.drv
+          #
+          # from a store that already had the closure -- because this repository's
+          # flake.lock names THREE nixpkgs (0182a361, ac56c456, 04906337) and only the
+          # ones reachable from the root were ever materialised.
+          #
+          # `nix flake archive` is run for each input too, so the walk is recursive.
           nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
+          python3 - "${RUNNER_TEMP}/flake-archive.json" > "${RUNNER_TEMP}/all-input-paths.txt" <<'ARCHIVE_WALK'
+          import json, sys
+          lock = json.load(open(sys.argv[1]))
+          seen, out = set(), []
+          def walk(node):
+              if not isinstance(node, dict):
+                  return
+              for key in ("path",):
+                  v = node.get(key)
+                  if isinstance(v, str) and v not in seen:
+                      seen.add(v); out.append(v)
+              for v in node.get("inputs", {}).values():
+                  walk(v)
+          walk(lock)
+          print("\n".join(out))
+          ARCHIVE_WALK
+          echo "archived input paths: $(wc -l < "${RUNNER_TEMP}/all-input-paths.txt")"
+          # And each input's own inputs, so a sibling's pin is materialised too.
+          while read -r input_flake; do
+            [[ -d "${input_flake}" ]] || continue
+            [[ -f "${input_flake}/flake.nix" ]] || continue
+            nix flake archive --json "path:${input_flake}" 2>/dev/null \
+              | jq -r '[.. | .path? // empty] | .[]' >> "${RUNNER_TEMP}/all-input-paths.txt" 2>/dev/null || true
+          done < "${RUNNER_TEMP}/all-input-paths.txt"
+          # A SOURCE IS NOT A STORE.
+          #
+          # Archiving gives each input's SOURCE path. What the 993-derivation bootstrap
+          # needs is that input's PACKAGES built -- a nixpkgs source alone still has to
+          # be instantiated and built. So every nixpkgs input found in the graph is
+          # realised through a trivial attribute, which builds the stdenv and the rest of
+          # the closure the tests will actually use.
+          sort -u -o "${RUNNER_TEMP}/all-input-paths.txt" "${RUNNER_TEMP}/all-input-paths.txt"
+          SYSTEM_NAME="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          while read -r candidate; do
+            [[ -d "${candidate}" ]] || continue
+            [[ -f "${candidate}/flake.nix" ]] || continue
+            # Only flakes that expose packages; a plain source tree has no flake.nix.
+            # nixpkgs exposes `legacyPackages`; a small flake exposes `packages`. Try
+            # both, and treat "neither" as "this input is not a package set", which is
+            # the normal case for the pure-source inputs in the graph.
+            realised=""
+            for attr in "legacyPackages.${SYSTEM_NAME}.hello" "packages.${SYSTEM_NAME}.hello"; do
+              if nix build --no-link "path:${candidate}#${attr}" > /dev/null 2>&1; then
+                realised="${attr}"
+                break
+              fi
+            done
+            if [[ -n "${realised}" ]]; then
+              echo "realised ${realised} of ${candidate}"
+              printf '%s\n' "${candidate}" >> "${RUNNER_TEMP}/realised-inputs.txt"
+            fi
+          done < "${RUNNER_TEMP}/all-input-paths.txt"
+          cat "${RUNNER_TEMP}/all-input-paths.txt" >> /tmp/flake-input-paths.txt
+          printf 'recursive input sources: %s\n' "$(wc -l < "${RUNNER_TEMP}/all-input-paths.txt")"
           jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
             >> /tmp/flake-input-paths.txt
           cat /tmp/flake-input-paths.txt >> "${RUNNER_TEMP}/app-outs.txt"
           printf 'flake inputs archived: %s\n' "$(wc -l < /tmp/flake-input-paths.txt)"
-
 
           # THE FLAKE INPUTS' OWN APPS, NOT JUST THEIR SOURCES.
           #
@@ -729,7 +813,6 @@ jobs:
               printf 'network-labs paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/labs-paths.txt")"
             fi
           fi
-
 
       # THE PICNED INPUT'S OWN APP, BUILT.
       #
