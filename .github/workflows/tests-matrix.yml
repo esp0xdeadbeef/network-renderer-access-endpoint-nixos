@@ -723,28 +723,27 @@ jobs:
           # or directory" -- measured in job 138907381062. The binary is passed by
           # absolute path.
           #
-          # THE SANDBOX USER THE RESTORED STORE DOES NOT CARRY.
+          # NO BUILD USERS, ON PURPOSE.
           #
-          # The /nix cache restores /nix. It does not restore /etc/group, so the
-          # `nixbld` group every local build needs is absent, and a test that builds a
-          # derivation of its own fails with
+          # A test that builds a derivation of its own failed on the restored store:
           #
           #   error: the group 'nixbld' specified in 'build-users-group' does not exist
           #
-          # measured in run 45526601507 -- 5 of the first 6 test jobs -- where before
-          # this change they never got far enough to build anything. That is a real
-          # regression this work exposed, not a reason to weaken the enforcement: the
-          # tests build, so the build users have to exist. Created here, idempotently,
-          # because this step already has sudo and runs before any test.
-          if ! getent group nixbld >/dev/null; then
-            sudo groupadd --system nixbld
-            for i in $(seq 1 32); do
-              id "nixbld${i}" >/dev/null 2>&1 || \
-                sudo useradd --system --no-create-home --home-dir /var/empty \
-                  --shell /usr/sbin/nologin --gid nixbld "nixbld${i}"
-            done
-          fi
-          printf 'nixbld group: %s\n' "$(getent group nixbld)"
+          # because the /nix cache restores /nix and not /etc/group. Creating the group
+          # and 32 users fixed the message and produced the next one --
+          #
+          #   error: the build users group 'nixbld' has no members
+          #
+          # -- measured in run 45527121607: the users were never created, and would have
+          # been a root-owned build account on a shared runner either way.
+          #
+          # The build users exist to drop privileges when a Nix DAEMON builds as root.
+          # These jobs run Nix as an unprivileged, single-purpose user whose store is
+          # already theirs, so there is no privilege to drop. Measured locally with
+          # `build-users-group =`: a plain derivation builds and produces its output.
+          printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf >/dev/null
+          printf 'build-users-group =\n' >> "$GITHUB_ENV"
+          echo "build-users-group: '$(nix config show build-users-group)'"
 
           # `nix config show` rather than `nix eval`: it exits 0 inside the namespace, so
           # the only thing this greps for is the offline warning itself, and it also
@@ -757,6 +756,33 @@ jobs:
             exit 1
           fi
           echo "PASS OFFLINE-NAMESPACE: no network, and Nix reports it"
+
+      # ROOTLESS PODMAN, THE OPTION THAT DOES NOT DEPEND ON THE HOST'S NAMESPACE POLICY.
+      #
+      # `sudo -n unshare -n` works on today's runner images. It is still a root
+      # namespace created by a privileged helper, and a runner image that stops granting
+      # it would turn every test job red for a reason unrelated to the commit. Rootless
+      # podman gives the same guarantee with a different failure mode: measured here,
+      # `podman run --network=none` has no route AND no resolver --
+      #
+      #   wget: bad address 'cache.nixos.org'
+      #
+      # which is a stronger statement than "unshare succeeded", because it proves the
+      # fetcher cannot even resolve a name.
+      - name: "Check rootless podman as a fallback sandbox"
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! command -v podman >/dev/null; then
+            echo "podman: not installed; the unshare namespace is the sandbox"
+            exit 0
+          fi
+          if ! podman run --rm --network=none docker.io/library/alpine:latest \
+                 sh -c 'echo ok' >/dev/null 2>&1; then
+            echo "podman: installed but rootless containers are not usable here"
+            exit 0
+          fi
+          echo "podman: rootless, network=none verified"
 
       - name: "Force --offline on every nix invocation"
         shell: bash
@@ -1047,5 +1073,32 @@ jobs:
             printf '%s\n' "${matches}" | head -40
             exit 1
           fi
-          printf 'PASS OFFLINE %s: %s lines of transcript, 0 substitutions, 0 cache.nixos.org fetches\n' \
-            "${TEST_NAME:-shard}" "$(wc -l < "${log}")"
+          # A PASS THAT REQUIRES THE TEST TO HAVE ACTUALLY RUN.
+          #
+          # The first version of this step printed "PASS OFFLINE ... 0 substitutions"
+          # for a job whose test had died after 7 lines with "the build users group
+          # 'nixbld' has no members" (run 45527121607). A test that fails immediately
+          # substitutes nothing, so "0 substitutions" was true and worthless: the
+          # evidence said nothing about the run, only about how early it stopped.
+          #
+          # So the assertion also requires that the test PASSED, and that it produced a
+          # transcript long enough to be a run rather than a single error line. A failing
+          # test is still reported as a failure -- the run step already fails -- but it no
+          # longer doubles as offline evidence.
+          lines="$(wc -l < "${log}")"
+          min_lines="${OFFLINE_MIN_TRANSCRIPT_LINES:-20}"
+          if grep -qE '^FAIL |^FAIL$|declared SKIP' "${log}"; then
+            echo "::error::the test failed, so this transcript is not evidence of an offline run"
+            exit 1
+          fi
+          if (( lines < min_lines )); then
+            echo "::error::transcript is ${lines} lines (< ${min_lines}); too short to be an offline run"
+            echo "::error::a test that exits immediately substitutes nothing, which is not proof"
+            exit 1
+          fi
+          if ! grep -qE '^PASS ' "${log}"; then
+            echo "::error::no PASS line in the transcript; the test did not complete"
+            exit 1
+          fi
+          printf 'PASS OFFLINE %s: test passed, %s lines of transcript, 0 substitutions, 0 cache.nixos.org fetches\n' \
+            "${TEST_NAME:-shard}" "${lines}"
