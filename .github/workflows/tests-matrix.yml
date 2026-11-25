@@ -1093,18 +1093,30 @@ jobs:
           # test is still reported as a failure -- the run step already fails -- but it no
           # longer doubles as offline evidence.
           lines="$(wc -l < "${log}")"
-          min_lines="${OFFLINE_MIN_TRANSCRIPT_LINES:-20}"
           if grep -qE '^FAIL |^FAIL$|declared SKIP' "${log}"; then
             echo "::error::the test failed, so this transcript is not evidence of an offline run"
             exit 1
           fi
-          if (( lines < min_lines )); then
-            echo "::error::transcript is ${lines} lines (< ${min_lines}); too short to be an offline run"
-            echo "::error::a test that exits immediately substitutes nothing, which is not proof"
-            exit 1
-          fi
           if ! grep -qE '^PASS ' "${log}"; then
             echo "::error::no PASS line in the transcript; the test did not complete"
+            exit 1
+          fi
+          # A LINE COUNT IS NOT THE CRITERION, AND I GOT THAT WRONG ONCE ALREADY.
+          #
+          # The first attempt required 20 lines and rejected FS-165-HDS-010-SDS-010-
+          # SMS-020, which had passed against a closed store in 10 lines of output
+          # (run 45528415884). Length is not evidence of anything: a concise test is not
+          # a vacuous one, and the failure that motivated the check -- a test dying after
+          # 7 lines -- is already caught by the two assertions above, because a test that
+          # dies prints no `PASS`.
+          #
+          # What distinguishes evidence from a formality is that the run EXERCISED
+          # something: a test that passes without invoking nix, or without touching a
+          # store path, proves nothing about the cache. So the requirement is that the
+          # transcript mentions a /nix/store path or a nix invocation.
+          if ! grep -qE '/nix/store/|(^| )nix (build|run|eval|flake|develop|shell|store)' "${log}"; then
+            echo "::error::the transcript never mentions a store path or a nix command"
+            echo "::error::a test that does not exercise nix is not evidence about the store"
             exit 1
           fi
           printf 'PASS OFFLINE %s: test passed, %s lines of transcript, 0 substitutions, 0 cache.nixos.org fetches\n' \
