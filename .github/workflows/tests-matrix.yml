@@ -1130,6 +1130,15 @@ jobs:
           git -C "${target}" fetch --quiet --depth 1 origin main
           git -C "${target}" checkout --quiet FETCH_HEAD
 
+      - name: "Record the source identity this job will build from"
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "sourceInfo: $(nix eval --impure --raw --expr "let f = builtins.getFlake \"path:${PWD}\"; in builtins.toJSON (f.sourceInfo or {})" 2>/dev/null)"
+          echo "worktree: $(git status --porcelain --untracked-files=all | wc -l) changed path(s)"
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          echo "compile drv here: $(nix eval --raw "${PWD}#apps.${system}.compile.program" --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)"
+
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
         env:
