@@ -176,6 +176,16 @@ jobs:
       # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
       # for the same pins restores a warm tree instead of installing Nix and
       # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      # /nix must exist before the cache is unpacked: the archive's members are
+      # absolute store paths and tar cannot create the missing parent, so a restore
+      # into a runner with no /nix fails member by member ("Cannot open: No such file
+      # or directory") and the job downloads everything anyway.
+      - name: "Prepare /nix for the cache"
+        shell: bash
+        run: |
+          sudo mkdir -p /nix
+          sudo chown -R "$(id -u):$(id -g)" /nix
+
       - uses: actions/cache@v4
         id: nixcache
         with:
@@ -191,6 +201,12 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      - if: steps.nixcache.outputs.cache-hit == 'true'
+        name: "Nix is on PATH (restored)"
+        shell: bash
+        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
 
       - name: "Nix is available"
         shell: bash
@@ -230,6 +246,16 @@ jobs:
       # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
       # for the same pins restores a warm tree instead of installing Nix and
       # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      # /nix must exist before the cache is unpacked: the archive's members are
+      # absolute store paths and tar cannot create the missing parent, so a restore
+      # into a runner with no /nix fails member by member ("Cannot open: No such file
+      # or directory") and the job downloads everything anyway.
+      - name: "Prepare /nix for the cache"
+        shell: bash
+        run: |
+          sudo mkdir -p /nix
+          sudo chown -R "$(id -u):$(id -g)" /nix
+
       - uses: actions/cache@v4
         id: nixcache
         with:
@@ -245,6 +271,12 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      - if: steps.nixcache.outputs.cache-hit == 'true'
+        name: "Nix is on PATH (restored)"
+        shell: bash
+        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
 
       - name: "Nix is available"
         shell: bash
@@ -353,6 +385,16 @@ jobs:
       # ~/.cache/nix holds the evaluated flake inputs. Keyed on flake.lock, so a job
       # for the same pins restores a warm tree instead of installing Nix and
       # resolving nixpkgs again. First job after a lock change pays; the rest do not.
+      # /nix must exist before the cache is unpacked: the archive's members are
+      # absolute store paths and tar cannot create the missing parent, so a restore
+      # into a runner with no /nix fails member by member ("Cannot open: No such file
+      # or directory") and the job downloads everything anyway.
+      - name: "Prepare /nix for the cache"
+        shell: bash
+        run: |
+          sudo mkdir -p /nix
+          sudo chown -R "$(id -u):$(id -g)" /nix
+
       - uses: actions/cache@v4
         id: nixcache
         with:
@@ -368,6 +410,12 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
+
+      # On a hit there was no installer to run, so nix is on disk but not on PATH.
+      - if: steps.nixcache.outputs.cache-hit == 'true'
+        name: "Nix is on PATH (restored)"
+        shell: bash
+        run: echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
 
       - name: "Nix is available"
         shell: bash
