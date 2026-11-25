@@ -1447,7 +1447,22 @@ jobs:
             echo "::group::sibling ${name} @ ${rev:0:10}"
             git init --quiet "${workspace}/${name}"
             git -C "${workspace}/${name}" remote add origin "https://github.com/esp0xdeadbeef/${repo}.git"
-            git -C "${workspace}/${name}" fetch --quiet --depth 1 origin "${rev}"
+            # FULL HISTORY, NOT `--depth 1`.
+            #
+            # A shallow clone becomes a flake input as
+            #   git+file:///...?rev=<rev>&shallow=1
+            # and Nix cannot resolve a shallow repository's inputs, so it tries to
+            # REWRITE that checkout's lock file -- which needs the network, which this
+            # job has already closed:
+            #
+            #   error: … while updating the lock file of flake
+            #     'git+file:///home/runner/work/network-labs/network-compiler?rev=5a8682f&shallow=1'
+            #
+            # (network-labs, FS-600-HDS-010-SDS-010-SMS-010 running a sibling's suite.)
+            #
+            # Fetching the history makes the sibling a flake Nix can evaluate as-is, so
+            # no lock update is implied. The cost is one full clone per sibling per job.
+            git -C "${workspace}/${name}" fetch --quiet origin "${rev}"
             git -C "${workspace}/${name}" checkout --quiet FETCH_HEAD
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
@@ -1482,7 +1497,9 @@ jobs:
           [[ -e "${target}" ]] && exit 0
           git init --quiet "${target}"
           git -C "${target}" remote add origin "https://github.com/esp0xdeadbeef/network-realization-model.git"
-          git -C "${target}" fetch --quiet --depth 1 origin main
+          # Full history for the same reason as the pinned siblings above: a shallow
+          # checkout cannot be evaluated as a flake without rewriting its lock.
+          git -C "${target}" fetch --quiet origin main
           git -C "${target}" checkout --quiet FETCH_HEAD
 
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
