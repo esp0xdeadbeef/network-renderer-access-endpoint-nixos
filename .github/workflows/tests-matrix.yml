@@ -516,9 +516,16 @@ jobs:
           if [[ ${#apps[@]} -eq 0 ]]; then
             echo "no apps to warm"
           fi
+          # `|| echo "warm ... failed"` is how a broken warm step stays invisible: the
+          # job goes green, the cache is saved without the app, and every test job then
+          # substitutes what it needs -- which is the failure this whole change exists to
+          # make visible. A warm that cannot build is red here, once.
           for app in "${apps[@]}"; do
             echo "::group::warm app ${app}"
-            nix build --no-link ".#apps.${system}.${app}.program" || echo "warm ${app} failed (tests build it themselves)"
+            nix build --no-link --print-out-paths ".#apps.${system}.${app}.program" || {
+              echo "::error::warm ${app} failed to build; the test jobs would substitute it"
+              exit 1
+            }
             echo "::endgroup::"
           done
 
