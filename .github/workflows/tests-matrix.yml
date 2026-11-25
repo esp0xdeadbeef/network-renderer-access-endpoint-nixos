@@ -192,8 +192,9 @@ jobs:
           path: |
             /nix
             /home/runner/.cache/nix
-          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-eval-v1
           restore-keys: |
+            nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
             nix-${{ runner.os }}-
 
       - if: steps.nixcache.outputs.cache-hit != 'true'
@@ -213,6 +214,13 @@ jobs:
           set -euo pipefail
           mkdir -p "/nix/var/nix/profiles/per-user"
           ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          # /etc/nix/nix.conf comes from the installer, which did not run on a hit.
+          # Without it every nix command dies with "experimental Nix feature
+          # 'nix-command' is disabled", which is what a restored cache produced.
+          if [[ ! -f /etc/nix/nix.conf ]]; then
+            sudo mkdir -p /etc/nix
+            printf 'experimental-features = nix-command flakes\n' | sudo tee /etc/nix/nix.conf >/dev/null
+          fi
           for candidate in "${HOME}/.nix-profile/bin" \
                            "/nix/var/nix/profiles/default/bin" \
                            "/nix/var/nix/profiles/per-user/${USER}/bin"; do
@@ -287,8 +295,9 @@ jobs:
           path: |
             /nix
             /home/runner/.cache/nix
-          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-eval-v1
           restore-keys: |
+            nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
             nix-${{ runner.os }}-
 
       - if: steps.nixcache.outputs.cache-hit != 'true'
@@ -308,6 +317,13 @@ jobs:
           set -euo pipefail
           mkdir -p "/nix/var/nix/profiles/per-user"
           ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          # /etc/nix/nix.conf comes from the installer, which did not run on a hit.
+          # Without it every nix command dies with "experimental Nix feature
+          # 'nix-command' is disabled", which is what a restored cache produced.
+          if [[ ! -f /etc/nix/nix.conf ]]; then
+            sudo mkdir -p /etc/nix
+            printf 'experimental-features = nix-command flakes\n' | sudo tee /etc/nix/nix.conf >/dev/null
+          fi
           for candidate in "${HOME}/.nix-profile/bin" \
                            "/nix/var/nix/profiles/default/bin" \
                            "/nix/var/nix/profiles/per-user/${USER}/bin"; do
@@ -342,6 +358,10 @@ jobs:
 
   list:
     name: "list tests"
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    # Discovery is seconds; the build-closure warm is not. 60 keeps a cold cache from
+    # turning discovery into a timeout.
     # BOTH flake jobs, in order, before a single test is scheduled: the gate that
     # evaluates the committed pins and the drift report that evaluates today's. They
     # were parallel because drift is `continue-on-error` -- which controls whether a
@@ -350,7 +370,7 @@ jobs:
     # sets, and that is the thing this whole workflow exists to prevent.
     needs: [flake-check, flake-drift]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     outputs:
       matrix: ${{ steps.discover.outputs.matrix }}
       count: ${{ steps.discover.outputs.count }}
@@ -358,6 +378,65 @@ jobs:
       shard_size: ${{ steps.discover.outputs.shard_size }}
     steps:
       - uses: actions/checkout@v6
+
+      # /nix must exist before the cache is unpacked: the archive members are absolute
+      # store paths and tar will not create the missing parent.
+      #
+      # Two keys, because a cache entry is immutable and the first writer wins: the
+      # gates write `-eval-v1` (evaluation inputs only, `--no-build`) and `list` alone
+      # writes `-apps-v2` (that store plus the build closure). With one shared key the
+      # gate saved first, `list`'s save was skipped, and every test job fetched git's
+      # 15 MiB doc output again.
+      - name: "Prepare /nix for the cache"
+        shell: bash
+        run: |
+          sudo mkdir -p /nix
+          sudo chown -R "$(id -u):$(id -g)" /nix
+      - uses: actions/cache@v4
+        id: nixcache
+        with:
+          path: |
+            /nix
+            /home/runner/.cache/nix
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-apps-v2
+          restore-keys: |
+            nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+            nix-${{ runner.os }}-
+      - if: steps.nixcache.outputs.cache-hit != 'true'
+        uses: nixbuild/nix-quick-install-action@v35
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+      - if: steps.nixcache.outputs.cache-hit == 'true'
+        name: "Put the restored Nix on PATH"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "/nix/var/nix/profiles/per-user"
+          ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          # /etc/nix/nix.conf comes from the installer, which did not run on a hit.
+          # Without it every nix command dies with "experimental Nix feature
+          # 'nix-command' is disabled", which is what a restored cache produced.
+          if [[ ! -f /etc/nix/nix.conf ]]; then
+            sudo mkdir -p /etc/nix
+            printf 'experimental-features = nix-command flakes\n' | sudo tee /etc/nix/nix.conf >/dev/null
+          fi
+          for candidate in "${HOME}/.nix-profile/bin" \
+                           "/nix/var/nix/profiles/default/bin" \
+                           "/nix/var/nix/profiles/per-user/${USER}/bin"; do
+            [[ -x "${candidate}/nix" ]] && printf '%s\n' "${candidate}" >> "${GITHUB_PATH}"
+          done
+          command -v nix >/dev/null || {
+            store_nix="$(find /nix/store -maxdepth 3 -name nix -type f -perm -u+x 2>/dev/null | head -1)"
+            [[ -n "${store_nix}" ]] && printf '%s\n' "$(dirname "${store_nix}")" >> "${GITHUB_PATH}"
+          }
+      - name: "Nix is available"
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v nix >/dev/null || { echo "nix not on PATH" >&2; ls -la /nix/var/nix/profiles 2>&1 | sed 's/^/  /' >&2; exit 1; }
+          nix --version
+
       - id: discover
         name: "Discover entrypoints"
         shell: bash
@@ -408,6 +487,34 @@ jobs:
             echo "discovered ${count} entrypoint(s): ${shards} shard(s) of ${shard_size}, because ${count} exceeds the ${max_jobs}-job matrix cap"
           fi
 
+      # Warm the BUILD closure, not just the evaluation inputs.
+      #
+      # `flake-check` runs `nix flake check --no-build`, so its store has every flake
+      # input and nothing that a test builds. Every test job then pays for the same
+      # closure: measured on FS-030-HDS-010-SDS-040-SMS-010, 144 paths / 111 MiB,
+      # including git (2.52.0) whose `out` references its own 15.1 MiB `-doc` output.
+      # Those derivations are identical for every test in a repository, so they are
+      # built once here and cached; `test` restores this cache because it needs `list`.
+      #
+      # Failures are tolerated: a repository whose app does not build must still run
+      # its tests, which is what the matrix is for.
+      - name: "Warm the build closure"
+        shell: bash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          apps_json="$(nix eval --json ".#apps.${system}" 2>/dev/null || echo '{}')"
+          mapfile -t apps < <(jq -r 'keys[]?' <<<"${apps_json}")
+          if [[ ${#apps[@]} -eq 0 ]]; then
+            echo "no apps to warm"
+          fi
+          for app in "${apps[@]}"; do
+            echo "::group::warm app ${app}"
+            nix build --no-link ".#apps.${system}.${app}.program" || echo "warm ${app} failed (tests build it themselves)"
+            echo "::endgroup::"
+          done
+
+
   test:
     name: "${{ matrix.test || format('shard {0}', matrix.shard) }}"
     needs: list
@@ -457,8 +564,9 @@ jobs:
           path: |
             /nix
             /home/runner/.cache/nix
-          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-apps-v2
           restore-keys: |
+            nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
             nix-${{ runner.os }}-
 
       - if: steps.nixcache.outputs.cache-hit != 'true'
@@ -478,6 +586,13 @@ jobs:
           set -euo pipefail
           mkdir -p "/nix/var/nix/profiles/per-user"
           ln -sfn "/nix/var/nix/profiles/per-user/${USER}" "${HOME}/.nix-profile"
+          # /etc/nix/nix.conf comes from the installer, which did not run on a hit.
+          # Without it every nix command dies with "experimental Nix feature
+          # 'nix-command' is disabled", which is what a restored cache produced.
+          if [[ ! -f /etc/nix/nix.conf ]]; then
+            sudo mkdir -p /etc/nix
+            printf 'experimental-features = nix-command flakes\n' | sudo tee /etc/nix/nix.conf >/dev/null
+          fi
           for candidate in "${HOME}/.nix-profile/bin" \
                            "/nix/var/nix/profiles/default/bin" \
                            "/nix/var/nix/profiles/per-user/${USER}/bin"; do
