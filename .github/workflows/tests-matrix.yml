@@ -954,8 +954,13 @@ jobs:
           # The test name is expanded by the shell `script -c` starts, from the
           # environment -- never spliced into this line, because a filename a pull
           # request controls would otherwise be code here.
+          # The name is passed explicitly through `env`, not left to inheritance: the
+          # namespace prefix is `sudo -n env PATH=... unshare -n`, and `sudo` scrubs the
+          # environment, so an inherited TEST_NAME arrives empty and run-one.sh is asked
+          # for `tests/` -- measured in run 45526062867, "error: no such test: tests/".
           if [[ -n "${TEST_NAME:-}" ]]; then
             exec ${NIX_NETNS:?} \
+              env TEST_NAME="${TEST_NAME}" \
               script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
 
@@ -980,7 +985,7 @@ jobs:
           printf 'shard %s/%s runs %s test(s)\n' "${SHARD}" "${SHARDS}" "${#mine[@]}"
           failures=0
           for test_path in "${mine[@]}"; do
-            if ! TEST_PATH="${test_path}" ${NIX_NETNS:?} \
+            if ! ${NIX_NETNS:?} env TEST_PATH="${test_path}" \
                    script -q -e -c 'bash tests/run-one.sh "${TEST_PATH}"' "${RUNNER_TEMP}/run.log"; then
               failures=$((failures + 1))
             fi
