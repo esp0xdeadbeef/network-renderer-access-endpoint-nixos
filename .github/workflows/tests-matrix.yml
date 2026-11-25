@@ -690,6 +690,47 @@ jobs:
           printf 'flake inputs archived: %s\n' "$(wc -l < /tmp/flake-input-paths.txt)"
 
 
+          # THE FLAKE INPUTS' OWN APPS, NOT JUST THEIR SOURCES.
+          #
+          # `nix run "path:$PWD#compile"` evaluates this flake, which materialises the
+          # build closures of its inputs. Archiving those inputs fetched their SOURCES
+          # only, so a test that runs the compiler pulled network-labs' closure --
+          # ghc-9.10.3, binutils-with-gold -- and the closed store refused it
+          # (run 45563403679).
+          #
+          # network-labs does have apps of its own; building them here is what makes
+          # that closure part of the cache instead of part of the run.
+          labs_src="$(jq -r '.inputs["network-labs"].path // empty' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)"
+          if [[ -n "${labs_src}" && -d "${labs_src}" ]]; then
+            echo "::group::warm network-labs apps from ${labs_src}"
+            labs_system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+            if nix eval --json "path:${labs_src}#apps.${labs_system}" > "${RUNNER_TEMP}/labs-apps.json" 2>/dev/null; then
+              while read -r labs_app; do
+                [[ -n "${labs_app}" ]] || continue
+                labs_drv="$(nix eval --raw "path:${labs_src}#apps.${labs_system}.${labs_app}.program" \
+                  --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
+                if nix-store -r "${labs_drv}" > /dev/null 2>&1; then
+                  echo "  ${labs_app}: ${labs_drv}"
+                  nix-store -qR "${labs_drv}" >> "${RUNNER_TEMP}/labs-paths.txt"
+                  nix-store -q --outputs "${labs_drv}" 2>/dev/null | while read -r o; do
+                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/labs-paths.txt"
+                  done
+                else
+                  echo "::warning::network-labs app ${labs_app} did not build"
+                fi
+              done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/labs-apps.json")
+            else
+              echo "no apps at network-labs"
+            fi
+            echo "::endgroup::"
+            if [[ -s "${RUNNER_TEMP}/labs-paths.txt" ]]; then
+              sort -u -o "${RUNNER_TEMP}/labs-paths.txt" "${RUNNER_TEMP}/labs-paths.txt"
+              cat "${RUNNER_TEMP}/labs-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
+              printf 'network-labs paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/labs-paths.txt")"
+            fi
+          fi
+
+
   test:
     name: "${{ matrix.test || format('shard {0}', matrix.shard) }}"
     needs: list
