@@ -669,10 +669,10 @@ jobs:
           # rather than recomputed: an app whose program the previous step could not
           # turn into a derivation must fail there, once, and not be silently skipped
           # here as well.
-          if [[ ! -s "${RUNNER_TEMP}/app-drvs.txt" ]]; then
-            echo "::error::the warm step recorded no app derivations"
-            exit 1
-          fi
+          # No app derivations is expected for a repository that declares no apps. The
+          # thing that must not happen -- an export with nothing in it -- is still caught
+          # by `paths_count == 0` below.
+          touch "${RUNNER_TEMP}/app-drvs.txt"
           mapfile -t drvs < "${RUNNER_TEMP}/app-drvs.txt"
           : > /tmp/store-paths.txt
           # THE DERIVATIONS AND THEIR OUTPUTS, BOTH.
