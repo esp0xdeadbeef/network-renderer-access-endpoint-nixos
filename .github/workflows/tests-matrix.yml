@@ -611,6 +611,53 @@ jobs:
             echo "::endgroup::"
           done < "${RUNNER_TEMP}/sibling-github-refs.txt"
 
+          # THE APPS OF THE PINNED REVISIONS, TOO.
+          #
+          # A provenance test compiles through a sibling's pinned compiler, and that
+          # revision's apps are its own derivations -- different from this repository's.
+          # Measured in run 45540528886: the warm job built z6acyg8v...-app.drv and the
+          # test then tried to build g1fbnn7v...-app.drv from source, which needs
+          # binutils-with-gold from ftpmirror.gnu.org. Seeing the source is not enough;
+          # the app the test executes has to be in the store.
+          #
+          # Every fleet-owned pin is warmed. That is up to 16 extra app builds, which is
+          # the price of a warm that is actually warm: the alternative measured out at
+          # a test building binutils from source at run time (run 45540528886). A
+          # revision without apps is not an error, and an app that fails to build is a
+          # warning here -- the test that needs it will fail and name the path, which is
+          # the signal this change exists to provide.
+          if [[ -s "${RUNNER_TEMP}/sibling-github-refs.txt" ]]; then
+            while read -r ref; do
+              [[ -n "${ref}" ]] || continue
+              [[ "${ref}" == github:esp0xdeadbeef/* ]] || continue
+              echo "::group::warm apps of ${ref}"
+              system_name="$(nix eval --impure --raw --expr builtins.currentSystem)"
+              if nix eval --json "${ref}#apps.${system_name}" > "${RUNNER_TEMP}/sib-apps.json" 2>/dev/null; then
+                while read -r sib_app; do
+                  [[ -n "${sib_app}" ]] || continue
+                  sib_drv="$(nix eval --raw "${ref}#apps.${system_name}.${sib_app}.program" \
+                    --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
+                  nix-store -r --add-root "${RUNNER_TEMP}/sib-roots/${sib_app}" "${sib_drv}" > /dev/null 2>&1 || {
+                    echo "::warning::${ref} app ${sib_app} did not build; if a test needs it, that test will say so"
+                    continue
+                  }
+                  nix-store -qR "${sib_drv}" >> "${RUNNER_TEMP}/sib-paths.txt"
+                  nix-store -q --outputs "${sib_drv}" 2>/dev/null | while read -r o; do
+                    nix-store -qR "${o}" >> "${RUNNER_TEMP}/sib-paths.txt"
+                  done
+                done < <(jq -r 'keys[]?' "${RUNNER_TEMP}/sib-apps.json")
+              else
+                echo "no apps at ${ref}"
+              fi
+              echo "::endgroup::"
+            done < "${RUNNER_TEMP}/sibling-github-refs.txt"
+            if [[ -s "${RUNNER_TEMP}/sib-paths.txt" ]]; then
+              sort -u -o "${RUNNER_TEMP}/sib-paths.txt" "${RUNNER_TEMP}/sib-paths.txt"
+              cat "${RUNNER_TEMP}/sib-paths.txt" >> "${RUNNER_TEMP}/app-outs.txt"
+              printf 'sibling app paths: %s\n' "$(wc -l < "${RUNNER_TEMP}/sib-paths.txt")"
+            fi
+          fi
+
           nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
           jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
             >> /tmp/flake-input-paths.txt
