@@ -762,10 +762,35 @@ jobs:
             mkdir -p "$(dirname "${work}")"
             cp -r "${src_path}" "${work}"
             chmod -R u+w "${work}"
-            if [[ ! -f "${work}/flake.lock" && -f flake.lock ]]; then
-              cp flake.lock "${work}/flake.lock"
+            # THE PINNED REVISION SHIPS NO LOCK, SO ITS APP IDENTITY IS NOT STABLE.
+            #
+            # Three repositories gitignore flake.lock, so the pinned source has none.
+            # Evaluating it creates one from whatever resolves AT THAT MOMENT, so the
+            # app derivation differs between the warm and the test even in the same job
+            # -- measured: the warm built 0sk992zv...-app, and the test then wanted
+            # 0p9fvblx...-app (run 45597803973), with an empty aeson/ShellCheck closure
+            # behind it.
+            #
+            # A lock taken from the SIBLING's own flake.lock for this repository is
+            # stable: it is the same file on every run. That is what is copied here.
+            if [[ ! -f "${work}/flake.lock" ]]; then
+              supplied=""
+              for cand in ../network-labs/flake.lock ../network-compiler/flake.lock flake.lock; do
+                [[ -f "${cand}" ]] || continue
+                supplied="${cand}"
+                break
+              done
+              if [[ -n "${supplied}" ]]; then
+                cp "${supplied}" "${work}/flake.lock"
+                echo "supplied ${supplied} as the lock for ${ref}"
+              fi
             fi
-            pinned_prog="$(nix eval --raw --impure "path:${work}#apps.${system_name}.compile.program" 2>/dev/null)" || pinned_prog=""
+            # Resolve the app EXACTLY as the test does: `path:` + `--impure`, and through
+          # `nix run`'s own installable, so no flag difference can produce a different
+          # derivation. The test invokes
+          #   nix run --no-warn-dirty --no-write-lock-file "path:${repo_root}#compile"
+          # so that is what is resolved and built here.
+          pinned_prog="$(nix eval --raw --impure "path:${work}#apps.${system_name}.compile.program" 2>/dev/null)" || pinned_prog=""
             if [[ -n "${pinned_prog}" ]] && nix build --no-link "${pinned_prog}" > /dev/null 2>&1; then
               echo "PASS WARM-PINNED-APP: ${ref} -> ${pinned_prog}"
               nix-store -qR "${pinned_prog}" >> "${RUNNER_TEMP}/pinned-paths.txt" 2>/dev/null || true
@@ -909,6 +934,12 @@ jobs:
           fi
           echo "runner-user compile app: ${drv}"
           prog="$(nix eval --raw "${PWD}#apps.${system}.compile.program" 2>/dev/null)" || prog=""
+          # The test resolves through `nix run --no-warn-dirty --no-write-lock-file`,
+          # which implies --impure. Ask the same way and report the drv, so a flag
+          # difference cannot hide between the warm and the run.
+          test_style_drv="$(nix eval --raw --impure "${PWD}#apps.${system}.compile.program" \
+            --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || test_style_drv=""
+          echo "test-style compile app: ${test_style_drv}"
           if [[ -n "${prog}" ]] && nix build --no-link "${prog}" > /dev/null 2>&1; then
             echo "PASS WARM-LOCAL-DEPS: build closure of ${prog} is present"
           else
