@@ -471,9 +471,34 @@ jobs:
             echo "no entrypoints discovered; the matrix will be empty"
             exit 0
           fi
-          json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+          # GITHUB CAPS A MATRIX AT 256 JOBS. THE CAP IS ON THE MATRIX, NOT ON THE
+          # PARALLELISM WITHIN IT.
+          #
+          # Above that the `test` job is not created at all -- measured: network-labs
+          # discovers 486 entrypoints and its run produced four jobs and no tests, with
+          # `list` reporting success. Sharding is the only way to run a suite that size,
+          # so it is used exactly when it is needed and not before: one job per test
+          # below the cap (a failure named after the test), shards above it (a failure
+          # named "shard N", which is worse but is the only thing that runs).
+          max_jobs="${TEST_MAX_JOBS:-250}"
+          shard_size="${TEST_SHARD_SIZE:-}"
+          if (( count <= max_jobs )); then
+            json="$(printf '%s\n' "${names[@]}" | python3 -c 'import json,sys; print(json.dumps({"test":[l.strip() for l in sys.stdin if l.strip()]}))')"
+            echo "shards=0" >> "$GITHUB_OUTPUT"
+            echo "shard_size=1" >> "$GITHUB_OUTPUT"
+            echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+            echo "discovered ${count} entrypoint(s): one job per test"
+            exit 0
+          fi
+          if [[ -z "${shard_size}" ]]; then
+            shard_size=$(( (count + max_jobs - 1) / max_jobs ))
+          fi
+          shards=$(( (count + shard_size - 1) / shard_size ))
+          echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+          echo "shard_size=${shard_size}" >> "$GITHUB_OUTPUT"
+          json="$(python3 -c "import json;print(json.dumps({'shard':list(range(${shards}))}))")"
           echo "matrix=${json}" >> "$GITHUB_OUTPUT"
-          echo "discovered ${count} entrypoint(s)"
+          echo "discovered ${count} entrypoint(s): ${shards} shard(s) of ${shard_size}, because ${count} exceeds the ${max_jobs}-job matrix cap"
 
 
       # Warm the BUILD closure, not just the evaluation inputs, then hand it to the
@@ -1478,6 +1503,40 @@ jobs:
               env TEST_NAME="${TEST_NAME}" \
               script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
+
+          # SHARD MODE: this job owns every entrypoint whose index % shards == shard.
+          #
+          # Used only for suites above GitHub's 256-job matrix cap (network-labs
+          # discovers 486). The discovery and sort must match `list`'s exactly, or a
+          # shard runs a different slice than it was counted for.
+          if [[ -f scripts/lib/discover-tests.sh ]]; then
+            # shellcheck source=/dev/null
+            source scripts/lib/discover-tests.sh
+            mapfile -t names < <(discover_tests "$PWD")
+          else
+            mapfile -t names < <(
+              find tests -maxdepth 1 -type f \
+                \( -name 'test-*.sh' -o -name 'test_*.py' \
+                   -o -regex '.*/FS-[0-9]+-HDS-[0-9]+-SDS-[0-9]+-\(SMS\|SIT\)-[0-9a-z][a-z0-9-]*\(-[a-z0-9-]+\)?\.\(sh\|py\)' \) \
+                ! -name 'test.sh' -printf '%f\n' | LC_ALL=C sort
+            )
+          fi
+          mine=()
+          for i in "${!names[@]}"; do
+            (( i % SHARDS == SHARD )) && mine+=("${names[$i]}")
+          done
+          printf 'shard %s/%s owns %s of %s test(s)\n' "${SHARD}" "${SHARDS}" "${#mine[@]}" "${#names[@]}"
+          failures=0
+          : > "${RUNNER_TEMP}/run.log"
+          for name in "${mine[@]}"; do
+            if ! ${NIX_NETNS:?} \
+                   env TEST_NAME="${name}" \
+                   script -q -e -a -c "bash tests/run-one.sh \"tests/${name}\"" "${RUNNER_TEMP}/run.log"; then
+              failures=$((failures + 1))
+            fi
+          done
+          printf 'shard %s/%s: %s of %s failed\n' "${SHARD}" "${SHARDS}" "${failures}" "${#mine[@]}"
+          (( failures == 0 )) || exit 1
 
           # The same discovery and the same sort as the list job, so shard N owns
           # exactly the tests it was counted for: index % shards == N.
