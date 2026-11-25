@@ -583,14 +583,25 @@ jobs:
           while read -r ref; do
             [[ -n "${ref}" ]] || continue
             echo "::group::materialise ${ref}"
-            # --no-update-lock-file: an older pinned revision carries a lock that
-            # today's Nix wants to rewrite, and rewriting it would reach the network
-            # for inputs the pin itself does not carry. Measured: without this flag the
-            # step died "while updating the lock file of flake 'github:.../5a8682f'".
-            nix flake archive --json --no-update-lock-file "${ref}" >/dev/null || {
+            # `flake prefetch`, NOT `flake archive`.
+            #
+            # `archive` walks the pin's OWN inputs and therefore wants to update the
+            # pin's lock file, which fails for an older revision whose lock no longer
+            # matches:
+            #   error: … while updating the lock file of flake 'github:.../5a8682f'
+            # -- and --no-update-lock-file does not avoid it (measured in run 45536566784).
+            #
+            # `prefetch` materialises exactly the revision named, into a store path, and
+            # walks no inputs. The tests fetch these refs the same way, so this is the
+            # matching primitive: same revision in, same store path out.
+            nix flake prefetch --json "${ref}" \
+              > "${RUNNER_TEMP}/prefetch.json" || {
               echo "::error::a sibling pins ${ref} and it could not be materialised"
               exit 1
             }
+            jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json" \
+              >> "${RUNNER_TEMP}/app-outs.txt"
+            echo "  $(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
             echo "::endgroup::"
           done < "${RUNNER_TEMP}/sibling-github-refs.txt"
 
