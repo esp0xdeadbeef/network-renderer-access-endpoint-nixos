@@ -554,6 +554,31 @@ jobs:
           done
 
 
+      # THE FLAKE INPUTS THE TESTS THEMSELVES FETCH.
+      #
+      # tests/test-emitter-provenance-repo-boundary.sh runs
+      #   nix flake archive --json "path:${repo_root}"
+      # which materialises every flake input into the store -- including the
+      # `github:esp0xdeadbeef/...` pins in flake.lock. With the store closed, an input
+      # that was never materialised here cannot be fetched there, and the test dies on
+      #   error: unable to download 'https://github.com/.../archive/<rev>.tar.gz'
+      # (run 45530546670). Running the same command once, here, is what makes the
+      # input closure part of the cache instead of part of the run.
+      - name: "Warm the flake inputs the provenance tests archive"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f tests/test-emitter-provenance-repo-boundary.sh ]]; then
+            echo "no provenance test in this repository; nothing to archive"
+            exit 0
+          fi
+          nix flake archive --json "path:${PWD}" > "${RUNNER_TEMP}/flake-archive.json"
+          jq -r '.path, (.inputs | to_entries[] | .value.path)' "${RUNNER_TEMP}/flake-archive.json" \
+            >> /tmp/flake-input-paths.txt
+          cat /tmp/flake-input-paths.txt >> "${RUNNER_TEMP}/app-outs.txt"
+          printf 'flake inputs archived: %s\n' "$(wc -l < /tmp/flake-input-paths.txt)"
+
+
   test:
     name: "${{ matrix.test || format('shard {0}', matrix.shard) }}"
     needs: list
