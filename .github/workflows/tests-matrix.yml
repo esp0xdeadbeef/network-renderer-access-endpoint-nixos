@@ -605,9 +605,13 @@ jobs:
               echo "::error::a sibling pins ${ref} and it could not be materialised"
               exit 1
             }
-            jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json" \
-              >> "${RUNNER_TEMP}/app-outs.txt"
-            echo "  $(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
+            store_path="$(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
+            # Recorded PER REF. The apps loop below is a separate loop, so reading
+            # prefetch.json there returned the LAST ref's path for every iteration and
+            # every revision reported "no apps" (run 45549346309).
+            printf '%s\t%s\n' "${ref}" "${store_path}" >> "${RUNNER_TEMP}/ref-paths.tsv"
+            printf '%s\n' "${store_path}" >> "${RUNNER_TEMP}/app-outs.txt"
+            echo "  ${store_path}"
             echo "::endgroup::"
           done < "${RUNNER_TEMP}/sibling-github-refs.txt"
 
@@ -638,7 +642,12 @@ jobs:
               # file" -- which needs the network the closed store refuses. The source is
               # copied out of the store (Nix will not write into a store path) and given
               # this repository's lock, whose pins the warm job has already materialised.
-              sib_src="$(jq -r '.storePath' "${RUNNER_TEMP}/prefetch.json")"
+              sib_src="$(awk -F'\t' -v r="${ref}" '$1 == r { print $2 }' "${RUNNER_TEMP}/ref-paths.tsv")"
+              if [[ -z "${sib_src}" ]]; then
+                echo "::warning::no prefetched source recorded for ${ref}"
+                echo "::endgroup::"
+                continue
+              fi
               sib_dir="${RUNNER_TEMP}/sib-src/$(echo "${ref}" | tr '/:' '__')"
               rm -rf "${sib_dir}"
               mkdir -p "$(dirname "${sib_dir}")"
