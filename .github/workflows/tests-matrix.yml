@@ -723,6 +723,29 @@ jobs:
           # or directory" -- measured in job 138907381062. The binary is passed by
           # absolute path.
           #
+          # THE SANDBOX USER THE RESTORED STORE DOES NOT CARRY.
+          #
+          # The /nix cache restores /nix. It does not restore /etc/group, so the
+          # `nixbld` group every local build needs is absent, and a test that builds a
+          # derivation of its own fails with
+          #
+          #   error: the group 'nixbld' specified in 'build-users-group' does not exist
+          #
+          # measured in run 45526601507 -- 5 of the first 6 test jobs -- where before
+          # this change they never got far enough to build anything. That is a real
+          # regression this work exposed, not a reason to weaken the enforcement: the
+          # tests build, so the build users have to exist. Created here, idempotently,
+          # because this step already has sudo and runs before any test.
+          if ! getent group nixbld >/dev/null; then
+            sudo groupadd --system nixbld
+            for i in $(seq 1 32); do
+              id "nixbld${i}" >/dev/null 2>&1 || \
+                sudo useradd --system --no-create-home --home-dir /var/empty \
+                  --shell /usr/sbin/nologin --gid nixbld "nixbld${i}"
+            done
+          fi
+          printf 'nixbld group: %s\n' "$(getent group nixbld)"
+
           # `nix config show` rather than `nix eval`: it exits 0 inside the namespace, so
           # the only thing this greps for is the offline warning itself, and it also
           # prints the substituter list the namespace will see.
