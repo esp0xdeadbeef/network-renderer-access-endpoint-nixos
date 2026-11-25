@@ -706,17 +706,28 @@ jobs:
         run: |
           set -euo pipefail
           netns=""
+          # `sudo` drops PATH; the suites call `nix`, `jq`, `python3` and `rg` by name, so
+          # the caller's PATH is carried through `env`. Without this the run step failed
+          # with "failed to execute /usr/bin/script: No such file or directory".
           if unshare -Urn true >/dev/null 2>&1; then
             netns="unshare -Urn"
-          elif sudo -n unshare -n true >/dev/null 2>&1; then
-            netns="sudo -n unshare -n"
+          elif sudo -n env "PATH=${PATH}" unshare -n true >/dev/null 2>&1; then
+            netns="sudo -n env PATH=${PATH} unshare -n"
           else
             echo "::error::this host gives no network namespace, so an offline run cannot be verified"
             exit 1
           fi
           printf 'NIX_NETNS=%s\n' "${netns}" >> "$GITHUB_ENV"
           echo "namespace: ${netns}"
-          out="$(${netns} nix eval --raw --expr '1' 2>&1 || true)"
+          # `sudo` resets PATH, so a bare `nix` inside the namespace is "No such file
+          # or directory" -- measured in job 138907381062. The binary is passed by
+          # absolute path.
+          #
+          # `nix config show` rather than `nix eval`: it exits 0 inside the namespace, so
+          # the only thing this greps for is the offline warning itself, and it also
+          # prints the substituter list the namespace will see.
+          nix_bin="$(command -v nix)"
+          out="$(${netns} "${nix_bin}" config show substituters 2>&1 || true)"
           if ! grep -qi "don't have Internet access" <<<"${out}"; then
             echo "::error::Nix did not report offline mode inside the namespace"
             printf '%s\n' "${out}" | head -10
