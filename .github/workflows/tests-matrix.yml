@@ -840,7 +840,17 @@ jobs:
           checks_done=0
           for chk in "${check_names[@]}"; do
             (( SECONDS - apps_started < apps_budget )) || { echo "  checks budget reached"; break; }
-            chk_out="$(nix build --no-link --print-out-paths "path:${PWD}#checks.${system}.${chk}" 2>/dev/null)" || {
+            # `.#checks`, THE RELATIVE FORM THE TESTS USE -- not `path:$PWD#checks`.
+            # Measured on network-labs openconfig-peer-posture:
+            #
+            #   nix eval  ".#checks.<sys>.openconfig-peer-posture.drvPath"      -> nw6jgxbd
+            #   nix eval  "path:$PWD#checks.<sys>.openconfig-peer-posture.drvPath" -> ivgr3wng
+            #
+            # Two derivations. The suites write `.#checks.${system}.<name>`, so warming
+            # the `path:` spelling built something no test asks for -- the same mistake
+            # as fix #4, made again one layer down, which is why 9 of 9 checks could be
+            # "realised" and the test still built 1400 derivations.
+            chk_out="$(nix build --no-link --print-out-paths ".#checks.${system}.${chk}" 2>/dev/null)" || {
               echo "::warning::check ${chk} could not be built"
               continue
             }
@@ -1097,17 +1107,22 @@ jobs:
           fi
           warmed=0
           for app in "${apps[@]}"; do
-            drv="$(nix eval --raw --impure "${flake_ref}#apps.${system}.${app}.program" \
+            # BOTH SPELLINGS. `path:$PWD#` and `$PWD#` and `.#` are three different
+            # source identities (measured), and the suites use more than one of them,
+            # so the app is warmed under each that resolves.
+            for try_ref in "${flake_ref}" "${PWD}" "."; do
+            drv="$(nix eval --raw --impure "${try_ref}#apps.${system}.${app}.program" \
               --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || {
               printf '  %-34s no derivation in its program string; skipped\n' "${app}"
               continue
             }
             if nix-store -r "${drv}" > /dev/null 2>&1; then
-              printf '  %-34s realised\n' "${app}"
+              printf '  %-34s realised via %s\n' "${app}" "${try_ref}"
               warmed=$((warmed + 1))
             else
               echo "::warning::app ${app} (${drv}) could not be realised"
             fi
+            done
           done
           echo "PASS WARM-APPS: ${warmed} of ${#apps[@]} app(s) realised"
 
