@@ -733,6 +733,47 @@ jobs:
           fi
           echo "PASS CACHE-STDENV-INPUTS: ${stdenv_done} input stdenv(s) realised"
 
+          # THE APPS OF THIS REPOSITORY'S OWN INPUTS, TOO.
+          #
+          # A cross-repository case archives this repository's inputs and then RUNS a
+          # sibling's app:
+          #
+          #   nix flake archive --json "path:${repo_root}"        # -> compilerPath
+          #   nix run "path:${compilerPath}#compile" -- ...
+          #
+          # The sibling's compile app was never warmed, so the closed store built it --
+          # 1534 derivations, measured in network-forwarding-model FS-180-HDS-010-SDS-010-
+          # SMS-010 after every stdenv was correctly in place.
+          #
+          # Bounded to the inputs of THIS lock (not every sibling's lock, which is what
+          # made this explode to 19 minutes once) and by the same wall clock, and each
+          # app's outputs are recorded, not its .drv.
+          apps_done=0
+          apps_max="${APPS_MAX_INPUTS:-6}"
+          if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
+            while read -r input_path; do
+              [[ -d "${input_path}" ]] || continue
+              [[ -f "${input_path}/flake.nix" ]] || continue
+              (( apps_done < apps_max )) || { echo "  input app budget reached"; break; }
+              (( SECONDS < stdenv_budget )) || { echo "  input app time budget reached"; break; }
+              while read -r in_app; do
+                [[ -n "${in_app}" ]] || continue
+                in_drv="$(nix eval --impure --raw "path:${input_path}#apps.${system}.${in_app}.program" \
+                  --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
+                if nix-store -r "${in_drv}" > /dev/null 2>&1; then
+                  while read -r o; do
+                    [[ -n "${o}" ]] || continue
+                    nix path-info "${o}" >/dev/null 2>&1 && printf '%s\n' "${o}" >> "${RUNNER_TEMP}/app-outs.txt"
+                  done < <(nix-store -q --outputs "${in_drv}" 2>/dev/null || true)
+                  printf '  input app realised: %s %s\n' "$(basename "${input_path}")" "${in_app}"
+                  apps_done=$((apps_done + 1))
+                fi
+              done < <(nix eval --json --impure "path:${input_path}#apps.${system}" \
+                         --apply builtins.attrNames 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+            done < <(jq -r '[.. | .path? // empty] | unique | .[]' "${RUNNER_TEMP}/flake-archive.json" 2>/dev/null || true)
+          fi
+          echo "PASS CACHE-INPUT-APPS: ${apps_done} input app(s) realised"
+
 
       - name: "Export the store closure for the test jobs"
         shell: bash
