@@ -425,10 +425,14 @@ let
       bridge = "mgmt";
       role = "endpoint";
     };
+    # The seeded negative is "a tenant endpoint attaches to the MANAGEMENT bridge". Which
+    # bridge that is must come from the model -- FS-310-HDS-010-SDS-010-SMS-120 forbids
+    # deciding it from the name -- so the fixture declares the role here, as a model would.
     bridgeNetworks.mgmt = {
       mode = "vlan";
       parent = "eth0";
       vlan = 300;
+      role = "management";
     };
   };
   moduleFn = renderer.hostModule {
