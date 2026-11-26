@@ -826,6 +826,33 @@ jobs:
           done
           echo "PASS CACHE-NIXPKG-ATTRS: ${shell_done} of ${#shell_attrs[@]} nixpkgs# attribute(s) realised"
 
+          # FLAKE `checks` -- a third thing tests build that is neither an app nor a
+          # package.
+          #
+          #   nix build ".#checks.${system}.openconfig-yang-validation" --no-link
+          #
+          # measured in network-labs FS-162-HDS-010-SDS-020-SMS-010: 1403 derivations
+          # built inside the test for a check nobody had warmed. These are ordinary
+          # derivations, so realising the whole set here is the fix, and it is bounded
+          # by the same clock.
+          mapfile -t check_names < <(nix eval --json --impure "path:${PWD}#checks.${system}" \
+            --apply builtins.attrNames 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+          checks_done=0
+          for chk in "${check_names[@]}"; do
+            (( SECONDS - apps_started < apps_budget )) || { echo "  checks budget reached"; break; }
+            chk_out="$(nix build --no-link --print-out-paths "path:${PWD}#checks.${system}.${chk}" 2>/dev/null)" || {
+              echo "::warning::check ${chk} could not be built"
+              continue
+            }
+            [[ -n "${chk_out}" ]] || continue
+            while read -r o; do
+              [[ -n "${o}" ]] || continue
+              nix path-info "${o}" >/dev/null 2>&1 && printf '%s\n' "${o}" >> "${RUNNER_TEMP}/app-outs.txt"
+            done <<<"${chk_out}"
+            checks_done=$((checks_done + 1))
+          done
+          echo "PASS CACHE-CHECKS: ${checks_done} of ${#check_names[@]} flake check(s) realised"
+
 
       - name: "Export the store closure for the test jobs"
         shell: bash
