@@ -474,19 +474,58 @@ let
         builtins.filter
           (bridge: builtins.isString bridge && bridge != "")
           (map (uplinkName: hostUplinks.${uplinkName}.bridge or null) hostUplinkNames);
+      # The management surface is modeled authority, and the model says it in two places:
+      # an uplink may carry `role = "management"` / `management = true`, and an endpoint
+      # assignment may carry `role = "management"` / `kind` / `managementEndpoint` with the
+      # bridge it attaches to. This used to classify a role from the uplink NAME
+      # (`uplinkName == "management"` — the pattern FS-310-HDS-010-SDS-010-SMS-120 lists as a
+      # naming-inference violation) and, when nothing matched, to supply the literal bridge
+      # `"mgmt"` that the model never named.
+      #
+      # Measured: the FS-725 fixtures declare the management surface the second way
+      # (`endpointAssignment.mgmt-console = { role = "management"; bridge = "mgmt"; }`), so
+      # reading only uplinks made `managementBridgeNames` empty and the renderer's own
+      # EMPTY_MANAGEMENT_ENDPOINT_INVENTORY guard fire on a correct model.
       managementUplinkBridgeNames =
         builtins.filter
           (bridge: builtins.isString bridge && bridge != "")
           (map
             (uplinkName:
               let uplink = hostUplinks.${uplinkName};
-              in if (uplink.role or null) == "management" || (uplink.management or false) == true || uplinkName == "management" then
+              in if (uplink.role or null) == "management" || (uplink.management or false) == true then
                 uplink.bridge or null
               else
                 null)
             hostUplinkNames);
-      managementBridgeNames =
-        if managementUplinkBridgeNames != [ ] then managementUplinkBridgeNames else [ "mgmt" ];
+      managementAssignmentBridgeNames =
+        let
+          managementAssignment = assignment:
+            (assignment.role or null) == "management"
+            || (assignment.kind or null) == "management"
+            || (assignment.managementEndpoint or false) == true;
+          bridges = map
+            (name: endpointBridge name endpointAssignments.${name})
+            (builtins.attrNames endpointAssignments);
+        in
+        builtins.filter
+          (bridge: builtins.isString bridge && bridge != "")
+          (map
+            (name:
+              let assignment = endpointAssignments.${name};
+              in if managementAssignment assignment then endpointBridge name assignment else null)
+            (builtins.attrNames endpointAssignments));
+      # A bridge may also be declared management in the model's own bridge network record
+      # (`bridgeNetworks.<name>.role = "management"`), which is a modeled fact and not a name.
+      managementBridgeNetworkNames =
+        builtins.filter
+          (name:
+            let bridge = cpmBridgeNetworks.${name};
+            in builtins.isAttrs bridge
+              && ((bridge.role or null) == "management" || (bridge.management or false) == true))
+          (builtins.attrNames cpmBridgeNetworks);
+      managementBridgeNames = lib.unique (
+        managementUplinkBridgeNames ++ managementAssignmentBridgeNames ++ managementBridgeNetworkNames
+      );
       endpointAssignmentNames = sortedAttrNames endpointAssignments;
       runtimeAddressAssignmentNames =
         builtins.filter
@@ -854,9 +893,10 @@ let
         && builtins.isAttrs uplink.ipv6
         && ((uplink.ipv6.acceptRA or false) || (uplink.ipv6.method or null) == "slaac");
 
-      isManagementUplink = uplinkName: uplink:
-        uplinkName == "management"
-        || (uplink.management or false) == true
+      # Modeled facts only: `FS-310-HDS-010-SDS-010-SMS-120` lists name-based role
+      # classification as a naming-inference violation by name.
+      isManagementUplink = _uplinkName: uplink:
+        (uplink.management or false) == true
         || (uplink.role or null) == "management";
 
       bridgeNetdevs =
