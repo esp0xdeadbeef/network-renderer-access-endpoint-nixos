@@ -1524,6 +1524,27 @@ jobs:
             # no lock update is implied. The cost is one full clone per sibling per job.
             git -C "${workspace}/${name}" fetch --quiet origin "${rev}"
             git -C "${workspace}/${name}" checkout --quiet FETCH_HEAD
+            # A SIBLING AT AN OLD REVISION MAY SHIP NO flake.lock.
+            #
+            # Three repositories in this fleet gitignore flake.lock, and a cross-repository
+            # test evaluates a sibling at a pinned revision. With no lock, that
+            # evaluation resolves `github:NixOS/nixpkgs` FRESHLY -- a nixpkgs nobody has
+            # warmed, so the first build bootstraps from busybox:
+            #
+            #   these 1579 derivations will be built:
+            #     ...-busybox.drv ...-bootstrap-tools.drv ...-stage0-posix-1.9.1-source.drv
+            #
+            # measured in network-forwarding-model and network-labs on a sibling pinned at
+            # network-compiler@5a8682f, which has no flake.lock (verified: the checkout is
+            # bare of one).
+            #
+            # Supplying this repository's lock gives the sibling deterministic pins, all of
+            # which the cache step above has already materialised and realised. It is a
+            # scratch checkout, so an untracked lock file there costs nothing.
+            if [[ ! -f "${workspace}/${name}/flake.lock" && -f flake.lock ]]; then
+              cp flake.lock "${workspace}/${name}/flake.lock"
+              printf '  supplied the lock: %s ships none\n' "${name}"
+            fi
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
 
@@ -1561,6 +1582,11 @@ jobs:
           # checkout cannot be evaluated as a flake without rewriting its lock.
           git -C "${target}" fetch --quiet origin main
           git -C "${target}" checkout --quiet FETCH_HEAD
+          # Same reason as the pinned siblings: a revision without a lock evaluates a
+          # freshly resolved nixpkgs, which nothing has warmed.
+          if [[ ! -f "${target}/flake.lock" && -f flake.lock ]]; then
+            cp flake.lock "${target}/flake.lock"
+          fi
 
       - name: "Run ${{ matrix.test || format('shard {0}', matrix.shard) }}"
         shell: bash
