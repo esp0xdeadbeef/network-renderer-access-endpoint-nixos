@@ -794,8 +794,20 @@ jobs:
           #
           # The list is READ FROM THE TESTS, not hardcoded, so a case that starts using
           # another attribute is covered without touching this file.
-          mapfile -t shell_attrs < <(grep -rhoE 'nixpkgs#[A-Za-z0-9._-]+' tests 2>/dev/null \
-            | sed 's/^nixpkgs#//' | grep -vE '^\.\.\.$' | sort -u || true)
+          # BOTH SPELLINGS. A case can ask for a package as
+          #
+          #   nix shell ... nixpkgs#yq-go
+          #   nix build --expr '... .legacyPackages.${builtins.currentSystem}.radvd'
+          #
+          # and the second one is what network-renderer-nixos FS-310-HDS-010-SDS-010-
+          # SMS-110 uses (measured: 488 derivations to obtain radvd). Non-attribute
+          # fragments come out of this too -- `${system}`, `currentSystem}` -- and are
+          # skipped when their evaluation fails, which costs one nix eval each.
+          mapfile -t shell_attrs < <(
+            {
+              grep -rhoE 'nixpkgs#[A-Za-z0-9._-]+' tests 2>/dev/null | sed 's/^nixpkgs#//'
+              grep -rhoE 'legacyPackages\.[A-Za-z0-9.${}]+' tests 2>/dev/null | sed 's/.*\.//'
+            } | grep -vE '^(\.\.\.|currentSystem\}?|withPackages|system\}?|x86.*|path)$' | sort -u || true)
           shell_done=0
           for attr in "${shell_attrs[@]}"; do
             (( SECONDS - apps_started < apps_budget )) || { echo "  nixpkgs# budget reached"; break; }
