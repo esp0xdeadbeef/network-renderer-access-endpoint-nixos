@@ -748,14 +748,21 @@ jobs:
           # Bounded to the inputs of THIS lock (not every sibling's lock, which is what
           # made this explode to 19 minutes once) and by the same wall clock, and each
           # app's outputs are recorded, not its .drv.
+          # ITS OWN CLOCK, not the stdenv one: by the time the stdenvs are done the
+          # shared budget was already spent, so the app loop had no time and stopped
+          # before reaching the input the tests actually run. Measured: six apps realised
+          # from the first input, and network-compiler's `compile` -- the one a case
+          # invokes -- never reached.
+          apps_started=${SECONDS}
+          apps_budget="${APPS_BUDGET_SECONDS:-420}"
           apps_done=0
-          apps_max="${APPS_MAX_INPUTS:-6}"
+          apps_max="${APPS_MAX_INPUTS:-24}"
           if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
             while read -r input_path; do
               [[ -d "${input_path}" ]] || continue
               [[ -f "${input_path}/flake.nix" ]] || continue
               (( apps_done < apps_max )) || { echo "  input app budget reached"; break; }
-              (( SECONDS < stdenv_budget )) || { echo "  input app time budget reached"; break; }
+              (( SECONDS - apps_started < apps_budget )) || { echo "  input app time budget reached"; break; }
               while read -r in_app; do
                 [[ -n "${in_app}" ]] || continue
                 in_drv="$(nix eval --impure --raw "path:${input_path}#apps.${system}.${in_app}.program" \
