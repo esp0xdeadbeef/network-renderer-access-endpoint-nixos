@@ -132,11 +132,18 @@ jobs:
               elif current and line.startswith("    needs:"):
                   value = line.split(":", 1)[1].strip()
                   jobs[current]["needs"] = [n.strip() for n in value.strip("[]").split(",") if n.strip()]
+              elif current and line.startswith("    continue-on-error:"):
+                  jobs[current]["continue-on-error"] = line.split(":", 1)[1].strip().lower() == "true"
 
           if "flake-check" not in jobs:
               failures.append("no flake-check job in this workflow")
           if "flake-check" not in jobs.get("list", {}).get("needs", []):
               failures.append("list does not declare `needs: flake-check`")
+          if "flake-drift" not in jobs.get("list", {}).get("needs", []):
+              failures.append("list does not declare `needs: flake-drift` (drift is a gate)")
+          for gate in ("flake-check", "flake-drift"):
+              if jobs.get(gate, {}).get("continue-on-error"):
+                  failures.append(f"{gate} is `continue-on-error`: it cannot gate `list`")
           if "list" not in jobs.get("test", {}).get("needs", []):
               failures.append("test does not declare `needs: list`")
 
@@ -146,7 +153,7 @@ jobs:
                   print(f"  - {f}", file=sys.stderr)
               print("  A green badge must mean the tests ran, not that the flake evaluates.", file=sys.stderr)
               sys.exit(1)
-          print("PASS FLAKE-GATE: one workflow; flake-check -> list -> test")
+          print("PASS FLAKE-GATE: one workflow; flake-check + flake-drift -> list -> test")
           CHECK
 
 
@@ -258,19 +265,22 @@ jobs:
       - name: "Check flake outputs (committed pins)"
         run: nix flake check --no-build -L --show-trace
 
-  # Drift is a report, not a gate.
+  # Drift is a GATE.
   #
   # This job updates every input and evaluates against the fleet as it is on main
-  # right now. Measured the first time it ran: `network-forwarding-model` deleted
-  # `compiler-input/sites/build.nix` (f843c4f) and `network-control-plane-model`
-  # still references it, so today's main does not evaluate. That is worth knowing
-  # every push -- the alternative is a nightly bumper discovering it a day later --
-  # but it must not stop 288 test jobs that test the commit under review.
+  # right now. A repository pinned to something main can no longer build is not
+  # green: testing the commit under review while silently pinned to a dead input
+  # just reports on code nobody can consume. When it was a report it stayed red for
+  # as long as anyone ignored it, which is how `network-realization-schema`
+  # ee36b1ba833171985fccb59f8ab6c0e5525f3acc -- an ORPHANED commit, not an ancestor of
+  # schema main, predating the canonical bundle field -- survived in five
+  # repositories at once.
+  #
+  # The gate is only useful with the pins it measures actually fixed: `nix flake
+  # update` across the fleet, not a hand-edited lock.
   flake-drift:
-    # Named so it cannot be mistaken for the gate: this one is a report.
-    name: "flake drift (today's pins, report only)"
+    name: "flake drift (today's pins)"
     needs: workflow-structure
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
