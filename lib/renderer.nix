@@ -1121,9 +1121,20 @@ let
       hostModuleFromCpmOutput {
         cpmOutput = if explicitCpm == null then { } else explicitCpm;
         canonicalCollections = rendererInput.canonicalCollections or { };
-        hostName = rendererInput.hostName or "s-router-test-clients";
-        # FS-310-HDS-030-SDS-010-SMS-110: caller must supply mode for non-test materialization.
-        mode = rendererInput.mode or "test";
+        # FS-310-HDS-030-SDS-010-SMS-110 makes the caller supply these for a non-default
+        # target, and FS-310-HDS-010-SDS-010-SMS-120 forbids the renderer choosing a value
+        # the model did not state. `hostModuleFromPaths` keeps the documented harness
+        # defaults; the bundle path requires them, and says which row is unmet.
+        hostName =
+          if builtins.isString (rendererInput.hostName or null) && rendererInput.hostName != "" then
+            rendererInput.hostName
+          else
+            throw "network-renderer-access-endpoint-nixos.hostModule: 'hostName' is required (FS-310-HDS-030-SDS-010-SMS-110); the renderer does not assume s-router-test-clients";
+        mode =
+          if builtins.isString (rendererInput.mode or null) && rendererInput.mode != "" then
+            rendererInput.mode
+          else
+            throw "network-renderer-access-endpoint-nixos.hostModule: 'mode' is required (FS-310-HDS-030-SDS-010-SMS-110); the renderer does not assume test materialization";
         sopsModule =
           let
             selected = rendererInput.sops or null;
