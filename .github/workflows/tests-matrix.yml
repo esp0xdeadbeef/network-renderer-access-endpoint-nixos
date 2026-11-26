@@ -649,7 +649,7 @@ jobs:
             # contain it. Its closure is every tool the suites run.
             env_drv="$(nix eval --raw --impure ".#devShells.${system}.default.drvPath" 2>/dev/null)" || env_drv=""
             if [[ -n "${env_drv}" ]]; then
-              printf '%s\n' "${env_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
+              nix-store -q --outputs "${env_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
               echo "  env derivation: ${env_drv}"
             fi
             for d in ${shell_path//:/ }; do
@@ -676,7 +676,12 @@ jobs:
           stdenv_budget="${STDENV_BUDGET_SECONDS:-300}"
           stdenv_done=0
           stdenv_seen=""
-          stdenv_max="${STDENV_MAX_INPUTS:-6}"
+          # The count is a safety valve, not the real guard: the wall-clock budget above
+          # is what keeps this bounded. A graph this size has more distinct nixpkgs than
+          # a small constant, and capping at 4/6 left the later ones cold -- which showed
+          # up as a 1579-derivation bootstrap in a cross-repository test that runs a
+          # SIBLING's app (`nix run path:${compiler_path}#compile`).
+          stdenv_max="${STDENV_MAX_INPUTS:-20}"
           if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
             while read -r input_path; do
               [[ -d "${input_path}" ]] || continue
@@ -710,7 +715,7 @@ jobs:
               esac
               stdenv_seen="${stdenv_seen} ${input_drv}"
               if nix-store -r "${input_drv}" > /dev/null 2>&1; then
-                printf '%s\n' "${input_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
+                nix-store -q --outputs "${input_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
                 printf '  input stdenv realised: %s -> %s\n' "$(basename "${input_path}")" "$(basename "${input_drv}")"
                 stdenv_done=$((stdenv_done + 1))
               fi
@@ -744,6 +749,13 @@ jobs:
           #
           # The real outputs are recorded by the warm step. Their runtime closure is what
           # an executed binary needs, and `-qR` on an output does include it.
+          #
+          # THIS IS WHY app-outs.txt MUST HOLD OUTPUTS AND NEVER .drv FILES. The warm step
+          # realises a stdenv and records it; recording the .drv made the export ship
+          # `-qR <drv>`, which is derivations and not one built path -- so the stdenv was
+          # realised in `list`, never travelled, and the first real build in a test
+          # bootstrapped 1579 derivations from busybox. The warm writes
+          # `nix-store -q --outputs` for exactly this reason.
           for drv in "${drvs[@]}"; do
             nix-store -qR "${drv}" >> /tmp/store-paths.txt
           done
@@ -1086,7 +1098,7 @@ jobs:
                "let f = builtins.getFlake \"path:${PWD}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".stdenv.drvPath" 2>/dev/null)" \
              && [[ -n "${stdenv_drv}" ]]; then
             if nix-store -r "${stdenv_drv}" > /dev/null 2>&1; then
-              printf '%s\n' "${stdenv_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
+              nix-store -q --outputs "${stdenv_drv}" >> "${RUNNER_TEMP}/app-outs.txt"
               echo "PASS CACHE-STDENV: stdenv realised (${stdenv_drv})"
             else
               echo "::warning::could not realise the pinned nixpkgs stdenv"
