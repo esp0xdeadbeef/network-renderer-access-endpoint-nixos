@@ -1638,6 +1638,11 @@ jobs:
       # this repository pins next to the workspace, which is exactly what the old
       # per-repository CI job did -- deleting that job deleted this step with it.
       - name: "Check out sibling repositories"
+        # `sib_seen` dedupes the sibling stdenv warm below across repositories, and is
+        # seeded with this repository's own stdenv so the common case -- a sibling that
+        # now follows this lock -- is skipped instead of re-evaluated.
+        env:
+          sib_seen: ""
         shell: bash
         run: |
           set -euo pipefail
@@ -1726,9 +1731,64 @@ jobs:
             # Supplying this repository's lock gives the sibling deterministic pins, all of
             # which the cache step above has already materialised and realised. It is a
             # scratch checkout, so an untracked lock file there costs nothing.
-            if [[ ! -f "${workspace}/${name}/flake.lock" && -f flake.lock ]]; then
+            # SUPPLY THIS REPOSITORY'S LOCK, ALWAYS.
+            #
+            # The suites do not evaluate a sibling THROUGH this flake -- they `cd` into
+            # the sibling checkout and run `nix` there, so the sibling's own lock (or its
+            # flake.nix) is the pinning authority, and every `follows` this flake
+            # declares is bypassed. That is why pin drift is possible even though the
+            # responsible layer pins correctly.
+            #
+            # Copying the lock used to happen only when the sibling shipped none, which
+            # left the common case unpinned: network-compiler's flake.nix pinned
+            # nixpkgs at an absolute rev, so the sibling's tests evaluated a nixpkgs
+            # nobody had warmed and rebuilt the bootstrap toolchain (1534 derivations,
+            # then `Could not resolve host: tarballs.nixos.org`).
+            #
+            # Measured: copying this lock into that checkout does NOT move an
+            # absolute-rev input (the URL wins over the lock), which is exactly why the
+            # rev had to become a branch in the first place -- and with the branch, the
+            # sibling now resolves to this repository's nixpkgs, which is the warmed one.
+            if [[ -f flake.lock ]]; then
               cp flake.lock "${workspace}/${name}/flake.lock"
-              printf '  supplied the lock: %s ships none\n' "${name}"
+              printf '  supplied the pin: %s now follows this lock\n' "${name}"
+            fi
+
+            # WARM THE SIBLING'S OWN STDENV.
+            #
+            # A sibling that ships a lock keeps it, and its nixpkgs is a different
+            # revision from this repository's -- so every stdenv the warm step
+            # realised above is the wrong one for it. The first suite to evaluate the
+            # sibling then rebuilt the entire bootstrap toolchain from source and died
+            # on the network:
+            #
+            #   these 1534 derivations will be built:
+            #     .../bootstrap-tools.tar.xz.drv
+            #   error: unable to download 'http://tarballs.nixos.org/stdenv/...':
+            #     Could not resolve host: tarballs.nixos.org
+            #
+            # measured in network-labs shard 0 running network-compiler's
+            # FS-030-HDS-010-SDS-010-SMS-010. Realising the sibling's stdenv here is
+            # the difference between that and a cache hit.
+            #
+            # Deduped by derivation across siblings (a fleet-wide update can leave two
+            # repositories on one nixpkgs), and it must never fail the job: a sibling
+            # that cannot be evaluated is the test's business, not the warm step's.
+            if [[ -f "${workspace}/${name}/flake.nix" ]]; then
+              sib_drv="$(cd "${workspace}/${name}" && timeout 120 nix eval --raw --impure \
+                --expr "(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${system}.stdenv.drvPath" \
+                2>/dev/null)" || sib_drv=""
+              if [[ -n "${sib_drv}" ]]; then
+                case " ${sib_seen} " in
+                  *" ${sib_drv} "*) printf '  sibling stdenv already realised\n' ;;
+                  *) if timeout 600 nix-store -r "${sib_drv}" > /dev/null 2>&1; then
+                       sib_seen="${sib_seen} ${sib_drv}"
+                       printf '  sibling stdenv realised: %s\n' "$(basename "${sib_drv}" .drv)"
+                     else
+                       echo "::warning::sibling ${name} stdenv could not be realised"
+                     fi ;;
+                esac
+              fi
             fi
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
