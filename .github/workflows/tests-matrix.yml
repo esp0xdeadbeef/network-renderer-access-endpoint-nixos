@@ -1929,6 +1929,13 @@ jobs:
             printf '%s\n' '--- last 60 transcript lines (diagnostic) ---'
             tail -n 60 "${log}"
             printf '%s\n' '--- end transcript ---'
+            # ALSO AS AN ANNOTATION. The transcript above lands in the job log, and the job
+            # log is exactly what could not be fetched when this was written (two
+            # repositories, 2026-11-27: `gh api .../logs` empty, `gh run view --log` =
+            # "stream error ... CANCEL"). Annotations are readable through a different
+            # endpoint, so the cause survives even when the log does not.
+            summary="$(tail -n 20 "${log}" | tr '\r' ' ' | sed -n 's/::/#/g;p' | paste -sd'|' - | cut -c1-1200)"
+            printf '::error::transcript tail: %s\n' "${summary}"
             exit 1
           fi
           if ! grep -qE '^PASS ' "${log}"; then
