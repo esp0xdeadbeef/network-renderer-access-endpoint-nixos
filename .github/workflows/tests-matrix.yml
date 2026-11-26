@@ -781,6 +781,39 @@ jobs:
           fi
           echo "PASS CACHE-INPUT-APPS: ${apps_done} input app(s) realised"
 
+          # PACKAGES THE SUITES ASK FOR BY ATTRIBUTE: `nix shell ... nixpkgs#yq-go`.
+          #
+          # A case can pull a package straight out of the pinned nixpkgs rather than
+          # from the devShell or an app:
+          #
+          #   nix shell --inputs-from "${repo_root}" nixpkgs#yq-go --command yq ...
+          #
+          # Nothing warms those, so with the store closed the whole build happens in the
+          # test -- measured in network-renderer-containerlab-linux-backend FS-270-HDS-
+          # 010-SDS-010-SMS-020, which built curl, libssh2 and a CVE patch to get yq.
+          #
+          # The list is READ FROM THE TESTS, not hardcoded, so a case that starts using
+          # another attribute is covered without touching this file.
+          mapfile -t shell_attrs < <(grep -rhoE 'nixpkgs#[A-Za-z0-9._-]+' tests 2>/dev/null \
+            | sed 's/^nixpkgs#//' | grep -vE '^\.\.\.$' | sort -u || true)
+          shell_done=0
+          for attr in "${shell_attrs[@]}"; do
+            (( SECONDS - apps_started < apps_budget )) || { echo "  nixpkgs# budget reached"; break; }
+            # `#inputs.nixpkgs...` is not a flake output attribute path; the input has
+            # to be reached through `builtins.getFlake`, as everywhere else here.
+            pkg_drv="$(nix eval --impure --raw --expr \
+              "let f = builtins.getFlake \"path:${PWD}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".${attr}.drvPath" 2>/dev/null)" || continue
+            if nix-store -r "${pkg_drv}" > /dev/null 2>&1; then
+              while read -r o; do
+                [[ -n "${o}" ]] || continue
+                nix path-info "${o}" >/dev/null 2>&1 && printf '%s\n' "${o}" >> "${RUNNER_TEMP}/app-outs.txt"
+              done < <(nix-store -q --outputs "${pkg_drv}" 2>/dev/null || true)
+              printf '  nixpkgs#%s realised\n' "${attr}"
+              shell_done=$((shell_done + 1))
+            fi
+          done
+          echo "PASS CACHE-NIXPKG-ATTRS: ${shell_done} of ${#shell_attrs[@]} nixpkgs# attribute(s) realised"
+
 
       - name: "Export the store closure for the test jobs"
         shell: bash
