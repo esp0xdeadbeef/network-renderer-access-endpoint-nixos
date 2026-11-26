@@ -1605,6 +1605,8 @@ jobs:
           if [[ -n "${TEST_NAME:-}" ]]; then
             exec ${NIX_NETNS:?} \
               env TEST_NAME="${TEST_NAME}" \
+                  NETWORK_REPO_DIRECT_TEST_OK="${NETWORK_REPO_DIRECT_TEST_OK:-0}" \
+                  NETWORK_REPO_SWEEP="${NETWORK_REPO_SWEEP:-0}" \
               script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
 
@@ -1635,6 +1637,8 @@ jobs:
           for name in "${mine[@]}"; do
             if ! ${NIX_NETNS:?} \
                    env TEST_NAME="${name}" \
+                       NETWORK_REPO_DIRECT_TEST_OK="${NETWORK_REPO_DIRECT_TEST_OK:-0}" \
+                       NETWORK_REPO_SWEEP="${NETWORK_REPO_SWEEP:-0}" \
                    script -q -e -a -c "bash tests/run-one.sh \"tests/${name}\"" "${RUNNER_TEMP}/run.log"; then
               failures=$((failures + 1))
             fi
@@ -1664,6 +1668,8 @@ jobs:
           failures=0
           for test_path in "${mine[@]}"; do
             if ! ${NIX_NETNS:?} env TEST_PATH="${test_path}" \
+                   NETWORK_REPO_DIRECT_TEST_OK="${NETWORK_REPO_DIRECT_TEST_OK:-0}" \
+                   NETWORK_REPO_SWEEP="${NETWORK_REPO_SWEEP:-0}" \
                    script -q -e -c 'bash tests/run-one.sh "${TEST_PATH}"' "${RUNNER_TEMP}/run.log"; then
               failures=$((failures + 1))
             fi
