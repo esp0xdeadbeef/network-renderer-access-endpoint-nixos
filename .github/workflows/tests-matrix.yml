@@ -1108,25 +1108,38 @@ jobs:
             exit 0
           fi
           warmed=0
+          seen=""
           for app in "${apps[@]}"; do
-            # BOTH SPELLINGS. `path:$PWD#` and `$PWD#` and `.#` are three different
-            # source identities (measured), and the suites use more than one of them,
-            # so the app is warmed under each that resolves.
+            # EVERY SPELLING THE SUITES USE, DEDUPED BY DERIVATION.
+            #
+            # `path:$PWD#`, `$PWD#` and `.#` are different source identities, so a suite
+            # may ask for any of them. Warming all three unconditionally realises the
+            # same closure repeatedly when they agree -- which is what made the log read
+            # "default realised via ... / realised via ... / realised via ..." for one
+            # app -- so a derivation already seen is skipped instead.
+            drvs=""
             for try_ref in "${flake_ref}" "${PWD}" "."; do
-            drv="$(nix eval --raw --impure "${try_ref}#apps.${system}.${app}.program" \
-              --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || {
-              printf '  %-34s no derivation in its program string; skipped\n' "${app}"
-              continue
-            }
-            if nix-store -r "${drv}" > /dev/null 2>&1; then
-              printf '  %-34s realised via %s\n' "${app}" "${try_ref}"
-              warmed=$((warmed + 1))
-            else
-              echo "::warning::app ${app} (${drv}) could not be realised"
-            fi
+              d="$(nix eval --raw --impure "${try_ref}#apps.${system}.${app}.program" \
+                --apply 'p: builtins.head (builtins.filter (n: builtins.match ".*\\.drv" n != null) (builtins.attrNames (builtins.getContext p)))' 2>/dev/null)" || continue
+              case " ${drvs} " in *" ${d} "*) continue ;; esac
+              drvs="${drvs} ${d}"
+              case " ${seen} " in
+                *" ${d} "*) ;;                       # already realised for another app
+                *) if nix-store -r "${d}" > /dev/null 2>&1; then
+                     seen="${seen} ${d}"
+                     warmed=$((warmed + 1))
+                   else
+                     echo "::warning::app ${app} (${d}) could not be realised"
+                   fi ;;
+              esac
             done
+            if [[ -n "${drvs}" ]]; then
+              printf '  %-34s %s derivation(s), all realised\n' "${app}" "$(wc -w <<<"${drvs}")"
+            else
+              printf '  %-34s no derivation in its program string; skipped\n' "${app}"
+            fi
           done
-          echo "PASS WARM-APPS: ${warmed} of ${#apps[@]} app(s) realised"
+          echo "PASS WARM-APPS: ${warmed} distinct app derivation(s) realised for ${#apps[@]} app(s)"
 
       - name: "Verify the cache: everything the tests need is already present"
         shell: bash
