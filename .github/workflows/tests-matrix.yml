@@ -1921,6 +1921,14 @@ jobs:
           lines="$(wc -l < "${log}")"
           if grep -qE '^FAIL |^FAIL$|declared SKIP' "${log}"; then
             echo "::error::the test failed, so this transcript is not evidence of an offline run"
+            # PRINT WHAT FAILED. The step failing here is the only signal an operator or an
+            # agent gets when the job-log API will not stream (measured twice on
+            # 2026-11-27: `gh api .../logs` returned nothing for every attempt), and the
+            # failure is indistinguishable from an environment fault without this tail.
+            # Diagnostics only: the gate above already decided, and nothing below relaxes it.
+            printf '%s\n' '--- last 60 transcript lines (diagnostic) ---'
+            tail -n 60 "${log}"
+            printf '%s\n' '--- end transcript ---'
             exit 1
           fi
           if ! grep -qE '^PASS ' "${log}"; then
