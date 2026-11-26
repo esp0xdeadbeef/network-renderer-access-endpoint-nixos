@@ -742,8 +742,8 @@ jobs:
           #   nix run "path:${compilerPath}#compile" -- ...
           #
           # The sibling's compile app was never warmed, so the closed store built it --
-          # 1534 derivations, measured in network-forwarding-model FS-180-HDS-010-SDS-010-
-          # SMS-010 after every stdenv was correctly in place.
+          # 1534 derivations, measured in network-forwarding-model
+          # FS-180-HDS-010-SDS-010-SMS-010 after every stdenv was correctly in place.
           #
           # Bounded to the inputs of THIS lock (not every sibling's lock, which is what
           # made this explode to 19 minutes once) and by the same wall clock, and each
@@ -789,8 +789,9 @@ jobs:
           #   nix shell --inputs-from "${repo_root}" nixpkgs#yq-go --command yq ...
           #
           # Nothing warms those, so with the store closed the whole build happens in the
-          # test -- measured in network-renderer-containerlab-linux-backend FS-270-HDS-
-          # 010-SDS-010-SMS-020, which built curl, libssh2 and a CVE patch to get yq.
+          # test -- measured in network-renderer-containerlab-linux-backend
+          # FS-270-HDS-010-SDS-010-SMS-020, which built curl, libssh2 and a CVE patch to
+          # get yq.
           #
           # The list is READ FROM THE TESTS, not hardcoded, so a case that starts using
           # another attribute is covered without touching this file.
@@ -799,8 +800,9 @@ jobs:
           #   nix shell ... nixpkgs#yq-go
           #   nix build --expr '... .legacyPackages.${builtins.currentSystem}.radvd'
           #
-          # and the second one is what network-renderer-nixos FS-310-HDS-010-SDS-010-
-          # SMS-110 uses (measured: 488 derivations to obtain radvd). Non-attribute
+          # and the second one is what network-renderer-nixos
+          # FS-310-HDS-010-SDS-010-SMS-110 uses (measured: 488 derivations to obtain
+          # radvd). Non-attribute
           # fragments come out of this too -- `${system}`, `currentSystem}` -- and are
           # skipped when their evaluation fails, which costs one nix eval each.
           mapfile -t shell_attrs < <(
