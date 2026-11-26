@@ -676,20 +676,29 @@ jobs:
           stdenv_budget="${STDENV_BUDGET_SECONDS:-300}"
           stdenv_done=0
           stdenv_seen=""
-          stdenv_max="${STDENV_MAX_INPUTS:-4}"
+          stdenv_max="${STDENV_MAX_INPUTS:-6}"
           if [[ -s "${RUNNER_TEMP}/flake-archive.json" ]]; then
             while read -r input_path; do
               [[ -d "${input_path}" ]] || continue
               [[ -f "${input_path}/flake.nix" ]] || continue
               (( stdenv_done < stdenv_max )) || { echo "  input stdenv budget reached"; break; }
               (( SECONDS < stdenv_budget )) || { echo "  input stdenv time budget reached"; break; }
-              # The input's OWN nixpkgs input, not its `packages`: network-compiler's
-              # flake exposes apps and lib and no packages at all, so asking it for a
-              # stdenv resolves nothing. Its nixpkgs input always exists.
+              # Three spellings, because "an input" means three different things here:
+              #
+              #   a flake that pins a nixpkgs   -> its `inputs.nixpkgs`
+              #   nixpkgs ITSELF (a nixpkgs input has no `inputs.nixpkgs`)
+              #                                 -> its own `legacyPackages`
+              #   a flake exposing packages     -> `packages`
+              #
+              # network-compiler's flake exposes apps and lib and no packages at all, so
+              # only the first form resolves; `nixpkgs-network` is a nixpkgs tree, so only
+              # the second does. Missing the second is why a 1579-derivation bootstrap
+              # survived even with three stdenvs already realised.
               # `--expr`, or `nix eval` treats the string as a FILE and fails with
               # "getting status of .../let f = builtins.getFlake ...: No such file".
               input_drv="$(nix eval --impure --raw --expr \
                 "let f = builtins.getFlake \"path:${input_path}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".stdenv.drvPath" 2>/dev/null \
+                || nix eval --raw --impure "path:${input_path}#legacyPackages.${system}.stdenv.drvPath" 2>/dev/null \
                 || nix eval --raw --impure "path:${input_path}#packages.${system}.stdenv.drvPath" 2>/dev/null \
                 || true)"
               [[ -n "${input_drv}" ]] || continue
