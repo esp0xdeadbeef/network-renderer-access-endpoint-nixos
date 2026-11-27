@@ -1410,6 +1410,17 @@ jobs:
       - name: "Verify the test can run with no network"
         shell: bash
         run: |
+          # PUT THE SHIM ON PATH BEFORE THE NAMESPACE IS BUILT.
+          #
+          # `netns` below bakes in `PATH=${PATH}` -- sudo scrubs the environment, so the
+          # caller's PATH has to be carried explicitly. That means a PATH export in the
+          # test step is too late: it never reaches the command the namespace runs, and
+          # the suites would still call the real `nix flake archive` and still fetch
+          # github: tarballs. Setting it here is what actually takes effect.
+          if [[ -d ${PWD}/tests/lib/bin ]]; then
+            PATH="${PWD}/tests/lib/bin:${PATH}"
+            export PATH
+          fi
           set -euo pipefail
           netns=""
           # `sudo` drops PATH; the suites call `nix`, `jq`, `python3` and `rg` by name, so
@@ -2043,6 +2054,27 @@ jobs:
           NIX_OFFLINE: "1"
         run: |
           set -uo pipefail
+          # `flake-archive-offline` ON PATH.
+          #
+          # The suites resolved flake inputs with `nix flake archive --json`, which copies
+          # every input into the store and therefore downloads `github:owner/repo/<rev>`
+          # tarballs. The rev that failed was not the test's -- it came from a sibling's
+          # lock, and a github: tarball and a git checkout of the same rev are different
+          # store paths, so the sibling checkout CI already made could never satisfy it:
+          #
+          #   unpacking 'github:esp0xdeadbeef/network-compiler/22dbbbc...' into the Git cache...
+          #   error: unable to download
+          #     'https://github.com/esp0xdeadbeef/network-compiler/archive/22dbbbc....tar.gz':
+          #     Could not resolve host: github.com
+          #
+          # The shim answers from the sibling checkouts instead. It is exported here, at the
+          # top of the step: the `exec ... env ... script` line below is a single continued
+          # command, and splicing into it turns the shell keywords into arguments -- which
+          # is exactly how a previous attempt produced "no run transcript at
+          # ${RUNNER_TEMP}/run.log" and failed every test job in the fleet.
+          if [[ -d tests/lib/bin ]]; then
+            export PATH="${PWD}/tests/lib/bin:${PATH}"
+          fi
           # `script(1)` gives the test a pty and tees everything it prints to
           # ${RUNNER_TEMP}/run.log, in order, stdout and stderr together. A plain
           # `2>&1 | tee` loses the interleaving Nix uses on a tty, and the assertion
@@ -2065,25 +2097,6 @@ jobs:
               env TEST_NAME="${TEST_NAME}" \
                   NETWORK_REPO_DIRECT_TEST_OK="${NETWORK_REPO_DIRECT_TEST_OK:-0}" \
                   NETWORK_REPO_SWEEP="${NETWORK_REPO_SWEEP:-0}" \
-              # `flake-archive-offline` ON PATH.
-              #
-              # The suites resolved flake inputs with `nix flake archive --json`, which
-              # copies every input into the store and therefore downloads
-              # `github:owner/repo/<rev>` tarballs. The rev that failed was not the
-              # test's -- it came from a sibling's lock, and a github: tarball and a git
-              # checkout of the same rev are different store paths, so the sibling CI
-              # already checked out could never satisfy it:
-              #
-              #   unpacking 'github:esp0xdeadbeef/network-compiler/22dbbbc...' into the Git cache...
-              #   error: unable to download
-              #     'https://github.com/esp0xdeadbeef/network-compiler/archive/22dbbbc....tar.gz':
-              #     Could not resolve host: github.com
-              #
-              # The shim answers from the sibling checkouts instead. Sibling tests inherit
-              # this PATH and the shim resolves from its argument, so one copy serves all.
-              if [[ -d tests/lib/bin ]]; then
-                export PATH="${PWD}/tests/lib/bin:${PATH}"
-              fi
               script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
 
