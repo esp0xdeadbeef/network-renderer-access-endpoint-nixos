@@ -775,6 +775,20 @@ jobs:
           stdenv_budget="${STDENV_BUDGET_SECONDS:-300}"
           stdenv_done=0
           stdenv_seen=""
+          # THIS REPOSITORY'S OWN STDENV, which every input is required to share.
+          #
+          # A bounding wall clock cannot save a step from one build that runs longer than
+          # the budget: the check happens BEFORE each input, so a single foreign stdenv
+          # builds for as long as it likes. Measured in network-control-plane-model run
+          # 45944911707: this step ran 05:19:30 -> 06:19:09, exactly the 60-minute job
+          # timeout, because an input pinned a 2024 nixpkgs (ac56c456) and Nix rebuilt
+          # that whole bootstrap toolchain from source.
+          #
+          # After the pin work every repository resolves ONE nixpkgs, so an input stdenv
+          # that differs is a foreign pin -- the very thing the pin gate forbids. It is
+          # reported, not built.
+          root_drv="$(nix eval --raw --impure \
+            --expr "let f = builtins.getFlake \"path:${PWD}\"; in f.inputs.nixpkgs.legacyPackages.\"${system}\".stdenv.drvPath" 2>/dev/null || true)"
           # The count is a safety valve, not the real guard: the wall-clock budget above
           # is what keeps this bounded. A graph this size has more distinct nixpkgs than
           # a small constant, and capping at 4/6 left the later ones cold -- which showed
@@ -806,6 +820,10 @@ jobs:
                 || nix eval --raw --impure "path:${input_path}#packages.${system}.stdenv.drvPath" 2>/dev/null \
                 || true)"
               [[ -n "${input_drv}" ]] || continue
+              if [[ -n "${root_drv}" && "${input_drv}" != "${root_drv}" ]]; then
+                echo "::warning::$(basename "${input_path}") pins a different nixpkgs (stdenv $(basename "${input_drv}" .drv)); not building it -- the pin rules require one nixpkgs"
+                continue
+              fi
               # DEDUPE BY DERIVATION. Most inputs pin the same nixpkgs, so their stdenv
               # is the same store path; without this the budget was spent re-realising
               # one derivation and the next distinct input never got a turn.
