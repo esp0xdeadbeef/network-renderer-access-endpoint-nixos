@@ -62,7 +62,47 @@ PY
 
 missing="$(python3 -c 'import json,sys; print(json.load(sys.stdin).pop("missing"))' <<<"${json}")"
 if (( missing > 0 )); then
-  printf 'flake-archive-offline: %s input(s) have no sibling checkout; resolving them through nix flake archive\n' "${missing}" >&2
-  exec nix flake archive "$@"
+  # AN INPUT WITH NO SIBLING CHECKOUT, most often `nixpkgs` itself.
+  #
+  # A flake under test can pin a nixpkgs revision that no current lock in the fleet
+  # names -- a fixture's own lock, or a sibling pinned at an older revision. There is no
+  # `../nixpkgs` directory to answer with, and the store holds one nixpkgs, so the real
+  # `nix flake archive` would fetch archive/<rev>.tar.gz:
+  #
+  #   error: Failed to open archive (Source threw exception: error: unable to download
+  #     'https://github.com/NixOS/nixpkgs/archive/0182a361...tar.gz':
+  #     Could not resolve host: github.com)
+  #
+  # measured in network-forwarding-model FS-171-HDS-010-SDS-010-SMS-010. Answering with
+  # THIS repository's nixpkgs -- already in the store, because the warm step put it
+  # there -- keeps the evaluation offline. The alternative is a network fetch for a
+  # nixpkgs the test does not assert anything about.
+  repo_nixpkgs="$(nix eval --offline --raw --impure \
+    --expr "(builtins.getFlake \"path:${root}\").inputs.nixpkgs.outPath" 2>/dev/null || true)"
+  if [[ -z "${repo_nixpkgs}" ]]; then
+    printf 'flake-archive-offline: %s input(s) have no sibling checkout and the repository nixpkgs could not be read; falling back\n' "${missing}" >&2
+    exec nix flake archive "$@"
+  fi
+  json="$(python3 - "${json}" "${repo_nixpkgs}" "${parent}" "${root}" <<'PY'
+import json, pathlib, sys
+
+data, repo_nixpkgs, parent, root = sys.argv[1:5]
+resolved = json.loads(data)
+resolved.pop("missing", None)
+inputs = resolved["inputs"]
+lock = pathlib.Path(root, "flake.lock")
+if lock.is_file():
+    try:
+        nodes = json.loads(lock.read_text()).get("nodes", {})
+    except json.JSONDecodeError:
+        nodes = {}
+    for name in ((nodes.get("root") or {}).get("inputs") or {}):
+        if name in inputs:
+            continue
+        # `nixpkgs` is the one input a sibling checkout cannot answer for.
+        inputs[name] = {"path": repo_nixpkgs}
+print(json.dumps(resolved))
+PY
+)"
 fi
 printf '%s\n' "${json}"
