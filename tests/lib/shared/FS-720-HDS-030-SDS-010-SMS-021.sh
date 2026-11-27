@@ -605,7 +605,7 @@ in
 }
 NIXEOF
 
-B1_JSON=$(nix eval --impure --json -f "${SCRATCH}/b1-positive.nix" 2>&1) || {
+B1_JSON=$(nix eval --impure --json -f "${SCRATCH}/b1-positive.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   B1_ERR="${B1_JSON}"
   echo "  FAIL: B1 — renderer evaluation failed: ${B1_ERR}"
   all_checks_passed=false
@@ -650,7 +650,7 @@ in
 }
 NIXEOF
 
-B2_JSON=$(nix eval --impure --json -f "${SCRATCH}/b2-missing-cpm-contract-gap.nix" 2>&1) || {
+B2_JSON=$(nix eval --impure --json -f "${SCRATCH}/b2-missing-cpm-contract-gap.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   echo "  INFO: B2 — nix eval itself failed (this is expected if flake inputs are unavailable): ${B2_JSON}"
   echo "  SKIP: B2 — falling back to source-presence verification"
   B2_JSON="{}"
@@ -685,7 +685,7 @@ in
 }
 NIXEOF
 
-B2_SRC_JSON=$(nix eval --impure --json -f "${SCRATCH}/b2-source-check.nix" 2>&1) || {
+B2_SRC_JSON=$(nix eval --impure --json -f "${SCRATCH}/b2-source-check.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   echo "  FAIL: B2 — source-presence nix eval failed: ${B2_SRC_JSON}"
   all_checks_passed=false
   B2_SRC_JSON="{}"
@@ -748,7 +748,7 @@ in
 }
 NIXEOF
 
-B3_JSON=$(nix eval --impure --json -f "${SCRATCH}/b3-fallback-guard.nix" 2>&1) || {
+B3_JSON=$(nix eval --impure --json -f "${SCRATCH}/b3-fallback-guard.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   echo "  FAIL: B3 — guard verification nix eval failed: ${B3_JSON}"
   all_checks_passed=false
   B3_JSON="{}"
@@ -820,7 +820,7 @@ in
 }
 NIXEOF
 
-B5_JSON=$(nix eval --impure --json -f "${SCRATCH}/b5-no-endpoint-profile.nix" 2>&1) || {
+B5_JSON=$(nix eval --impure --json -f "${SCRATCH}/b5-no-endpoint-profile.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   echo "  FAIL: B5 — no-endpoint CPM profile eval failed: ${B5_JSON}"
   all_checks_passed=false
   B5_JSON="{}"
@@ -855,7 +855,7 @@ in
 }
 NIXEOF
 
-B4_JSON=$(nix eval --impure --json -f "${SCRATCH}/b4-cpm-structure.nix" 2>&1) || {
+B4_JSON=$(nix eval --impure --json -f "${SCRATCH}/b4-cpm-structure.nix" 2>&1 | grep -vF "you don't have Internet access") || {
   echo "  FAIL: B4 — structure guard nix eval failed: ${B4_JSON}"
   all_checks_passed=false
   B4_JSON="{}"
