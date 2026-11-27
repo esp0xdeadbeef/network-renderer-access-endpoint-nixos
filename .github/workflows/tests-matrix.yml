@@ -962,8 +962,16 @@ jobs:
             # the `path:` spelling built something no test asks for -- the same mistake
             # as fix #4, made again one layer down, which is why 9 of 9 checks could be
             # "realised" and the test still built 1400 derivations.
-            chk_out="$(nix build --no-link --print-out-paths ".#checks.${system}.${chk}" 2>/dev/null)" || {
-              echo "::warning::check ${chk} could not be built"
+            # PER-CHECK TIMEOUT, because the shared budget is checked BEFORE each item and
+            # therefore cannot bound a single build. Measured in
+            # network-control-plane-model run 45952784175: after
+            # "PASS CACHE-NIXPKGS-ATTRS: 0 of 1", this loop ran 06:39:41 -> 07:36:56 and
+            # the job died at its 60-minute timeout with every test job skipped. A check
+            # that cannot be built inside its own slice is reported and skipped, which is
+            # the same outcome the shared budget would have produced, only sooner.
+            chk_out="$(timeout "${CHECK_ITEM_BUDGET_SECONDS:-240}" \
+              nix build --no-link --print-out-paths ".#checks.${system}.${chk}" 2>/dev/null)" || {
+              echo "::warning::check ${chk} not built within ${CHECK_ITEM_BUDGET_SECONDS:-240}s; skipped"
               continue
             }
             [[ -n "${chk_out}" ]] || continue
