@@ -1770,12 +1770,43 @@ jobs:
       # This step only ASSERTS that the declaration holds, and it does so inside the same
       # shell the tests run in -- so a missing tool fails here, named, instead of midway
       # through a suite.
+      # INSTALL WHAT THE IMAGE LACKS, BEFORE THE STORE CLOSES.
+      #
+      # FS-540-HDS-010-SDS-010-SMS-035 needs `age-keygen` and `sops`; both are on a
+      # developer machine and neither is on the runner image, so the case failed in CI only.
+      # Best effort: a package that does not exist here is not fatal, because the assertion
+      # below names whatever is still missing.
+      - name: "Install the tools the suites declare"
+        shell: bash
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq || true
+          for pkg in age sops dnsutils nmap gron socat conntrack; do
+            sudo apt-get install -y -qq "${pkg}" >/dev/null 2>&1 \
+              || echo "no apt package '${pkg}' here; the assertion will name it if a suite needs it"
+          done
+
       - name: "Assert the flake declares every tool the tests use"
         shell: bash
         run: |
           set -euo pipefail
+          # THE LIST IS DERIVED FROM THE SUITES, not typed here.
+          #
+          # `require_cmd X` and `for cmd in A B C; do command -v ...` are how a case declares
+          # what it needs, and a hardcoded list missed them: FS-540-HDS-010-SDS-010-SMS-035
+          # died on the runner with "missing required command: age-keygen" while local runs
+          # passed, because `age` is on a developer machine and not on the image. Deriving the
+          # list turns a mystery red job into a named missing tool.
+          declared_tools="$(
+            {
+              grep -rhoE 'require_cmd [A-Za-z0-9_.-]+' tests 2>/dev/null | awk '{print $2}' || true
+              grep -rhoE 'for (cmd|tool) in [A-Za-z0-9_.\- ]+' tests 2>/dev/null \
+                | sed -E 's/^for (cmd|tool) in //' | tr ' ' '\n' || true
+            } | sort -u | tr '\n' ' '
+          )"
+          echo "declared by the suites: ${declared_tools}"
           missing=0
-          for tool in nix jq git rg ssh python3; do
+          for tool in nix jq git rg ssh python3 ${declared_tools}; do
             if command -v "${tool}" >/dev/null; then
               printf '  %-8s %s\n' "${tool}" "$(command -v "${tool}")"
             else
