@@ -1,7 +1,7 @@
 # Trace-id citation debt this repository currently carries.
 # Generated: TRACE_ID_CHAINS_BASELINE_UPDATE=1 bash tests/test-trace-id-chains.sh
 # The count must move only with this file, in the same change: see the test header.
-BARE=87
+BARE=89
 PARTIAL=0
 SHORTHAND=1
 WRAPPED=0
