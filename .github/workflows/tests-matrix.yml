@@ -1731,27 +1731,35 @@ jobs:
             # Supplying this repository's lock gives the sibling deterministic pins, all of
             # which the cache step above has already materialised and realised. It is a
             # scratch checkout, so an untracked lock file there costs nothing.
-            # SUPPLY THIS REPOSITORY'S LOCK, ALWAYS.
+            # A SIBLING'S OWN LOCK IS KEPT. DO NOT OVERWRITE IT.
             #
-            # The suites do not evaluate a sibling THROUGH this flake -- they `cd` into
-            # the sibling checkout and run `nix` there, so the sibling's own lock (or its
-            # flake.nix) is the pinning authority, and every `follows` this flake
-            # declares is bypassed. That is why pin drift is possible even though the
-            # responsible layer pins correctly.
+            # The suites do not evaluate a sibling THROUGH this flake -- they `cd` into the
+            # sibling checkout and run `nix` there, so the sibling's own lock is the
+            # pinning authority and every `follows` this flake declares is bypassed. That
+            # is why pin drift is possible even when the responsible layer pins correctly,
+            # and the fix belongs in the sibling's own flake (an absolute rev in an input
+            # URL cannot be moved by a `follows` OR by a copied lock -- measured).
             #
-            # Copying the lock used to happen only when the sibling shipped none, which
-            # left the common case unpinned: network-compiler's flake.nix pinned
-            # nixpkgs at an absolute rev, so the sibling's tests evaluated a nixpkgs
-            # nobody had warmed and rebuilt the bootstrap toolchain (1534 derivations,
-            # then `Could not resolve host: tarballs.nixos.org`).
+            # Overwriting this lock was tried and is WRONG. A lock describes the graph of
+            # the flake that wrote it; this repository's lock maps `root.inputs.network-compiler`,
+            # so a sibling whose flake declares `network-labs` finds no entry for it, and
+            # Nix then UPDATES the lock -- which is a network operation:
             #
-            # Measured: copying this lock into that checkout does NOT move an
-            # absolute-rev input (the URL wins over the lock), which is exactly why the
-            # rev had to become a branch in the first place -- and with the branch, the
-            # sibling now resolves to this repository's nixpkgs, which is the warmed one.
-            if [[ -f flake.lock ]]; then
-              cp flake.lock "${workspace}/${name}/flake.lock"
-              printf '  supplied the pin: %s now follows this lock\n' "${name}"
+            #   … while updating the lock file of flake
+            #     'git+file:///.../network-compiler'
+            #   … while fetching the input 'github:esp0xdeadbeef/network-labs'
+            #   error: unable to download
+            #     'https://api.github.com/repos/esp0xdeadbeef/network-labs/commits/HEAD':
+            #     Could not resolve host: api.github.com
+            #
+            # measured in network-labs shard 0 after the overwrite shipped. With its own
+            # lock restored, the same evaluation completes offline with no lock update.
+            #
+            # A sibling that ships NO lock cannot be served one either: any lock supplied
+            # is the wrong graph, so the update happens anyway. Those checkouts are
+            # reported, not patched, so the gap is visible instead of silent.
+            if [[ ! -f "${workspace}/${name}/flake.lock" ]]; then
+              echo "::warning::sibling ${name} ships no flake.lock; its evaluation cannot be offline"
             fi
 
             # WARM THE SIBLING'S OWN STDENV.
@@ -1792,6 +1800,94 @@ jobs:
             fi
             echo "::endgroup::"
           done < "$RUNNER_TEMP/siblings.tsv"
+
+      # ONE LOUD ERROR INSTEAD OF TWO HUNDRED DNS ERRORS.
+      #
+      # A suite enters a sibling checkout and runs `nix` there, so the sibling's own
+      # flake.lock is the pinning authority. If that lock does not describe the sibling's
+      # flake, Nix UPDATES it -- a network operation -- and with the store closed and the
+      # network namespace up, every such test fails with the same unhelpful line:
+      #
+      #   … while updating the lock file of flake 'git+file:///.../network-compiler'
+      #   … while fetching the input 'github:esp0xdeadbeef/network-labs'
+      #   error: unable to download
+      #     'https://api.github.com/repos/esp0xdeadbeef/network-labs/commits/HEAD':
+      #     Could not resolve host: api.github.com
+      #
+      # It is one condition, measured once, and reported here before any suite runs.
+      # This is the check that would have caught a foreign flake.lock being written into
+      # a sibling: with this repository's lock copied into network-compiler's checkout,
+      # the evaluation below reports "updating the lock file" and fails.
+      - name: "Siblings evaluate with a closed store"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'SIBLING_GATE'
+          #!/usr/bin/env python3
+          """Fail if a sibling checkout cannot be evaluated with a closed store.
+
+          A suite `cd`s into a sibling and runs `nix` there, so the sibling's own flake.lock is
+          the pinning authority. When that lock does not cover the flake's inputs, Nix UPDATES
+          the lock -- a network operation -- and every test that touches the sibling dies with
+
+            … while updating the lock file of flake 'git+file:///.../network-compiler'
+            … while fetching the input 'github:esp0xdeadbeef/network-labs'
+            error: unable to download
+              'https://api.github.com/repos/esp0xdeadbeef/network-labs/commits/HEAD':
+              Could not resolve host: api.github.com
+
+          The condition is two static facts, so it is checked statically:
+
+            1. the checkout has a flake.lock at all, and
+            2. every input named in flake.nix is mapped by the lock's root node.
+
+          Rule 2 is what catches a FOREIGN lock: writing network-labs' lock into
+          network-compiler's checkout leaves `network-labs` (declared by compiler's flake) with
+          no root mapping, which is precisely the state that made Nix rewrite the lock.
+
+          `nix eval --offline` is not usable as the detector: Nix caches flake resolutions, so on
+          any machine with a warm cache the evaluation succeeds even with no lock present.
+          """
+          import json
+          import pathlib
+          import re
+          import sys
+
+          INPUT = re.compile(r'^\s*([A-Za-z0-9_-]+)\.url\s*=\s*"', re.M)
+
+          bad = []
+          for d in sorted(pathlib.Path("..").glob("network-*")):
+              flake = d / "flake.nix"
+              if not flake.is_file():
+                  continue
+              declared = {m.group(1) for m in INPUT.finditer(flake.read_text())}
+              lock_path = d / "flake.lock"
+              if not lock_path.is_file():
+                  bad.append((d.name, "ships no flake.lock, so its inputs must be resolved over the network"))
+                  continue
+              try:
+                  lock = json.loads(lock_path.read_text())
+              except json.JSONDecodeError as exc:
+                  bad.append((d.name, f"flake.lock is not valid JSON: {exc}"))
+                  continue
+              root = lock.get("nodes", {}).get(lock.get("root", "root"), {}).get("inputs", {})
+              missing = sorted(declared - set(root))
+              if missing:
+                  bad.append((
+                      d.name,
+                      "flake.lock does not map " + ", ".join(f"`{m}`" for m in missing)
+                      + " -- the lock does not describe this flake and Nix would rewrite it",
+                  ))
+
+          if bad:
+              for name, why in bad:
+                  print(f"::error file=../{name}/flake.lock::{name}: {why}")
+              print("::error::a sibling cannot be evaluated with a closed store; regenerate that "
+                    "repository's lock (nix flake lock) and commit it, or the tests will fail on DNS")
+              sys.exit(1)
+          print(f"PASS SIBLING-OFFLINE: {len(list(pathlib.Path('..').glob('network-*')))} sibling "
+                f"checkout(s) have a lock that describes their flake")
+          SIBLING_GATE
 
       # Siblings the tests need but flake.lock CANNOT pin, with a reason.
       #
