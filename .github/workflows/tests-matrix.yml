@@ -138,7 +138,15 @@ jobs:
 
           urls = list(re.finditer(r'^\s*([A-Za-z0-9_-]+)\.url\s*=\s*"', text, re.M))
           body = re.sub(r'^\s*[A-Za-z0-9_.-]+\.url\s*=\s*"[^"]+"\s*;\s*$', "", text, flags=re.M)
+          # SHELL TESTS READ FLAKE INPUTS TOO. The scan only looked at *.nix, so an input
+          # read as `flake.inputs.network-labs.outPath` from a bash case counted as dead and
+          # a sweep removed it -- which then failed 6 test jobs with "attribute
+          # 'network-control-plane-model' missing" (network-renderer-containerlab-linux-backend
+          # run 45952823354). The question this check asks is "is the input read anywhere in
+          # the repository", and the suite is part of the repository.
           tree = [f for f in pathlib.Path(".").rglob("*.nix") if f.name != "flake.nix"]
+          if pathlib.Path("tests").is_dir():
+              tree += [f for f in pathlib.Path("tests").rglob("*.sh")]
           for m in urls:
               name = m.group(1)
               line = text[: m.start()].count("\n") + 1
