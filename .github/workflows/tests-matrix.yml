@@ -187,6 +187,24 @@ jobs:
           print("PASS PIN-RULES: no absolute revs, no dead inputs, every input follows nixpkgs")
           PIN_CHECK
 
+      # OBSOLETE FIXTURES ARE REPORTED, NOT FAILED, AND NOT FIXED HERE.
+      #
+      # A fixture that encodes a superseded contract (relations selecting exits with
+      # `uplinks`, allow relations without `returnBehavior`, an external named but not
+      # declared as an overlay) makes every test that consumes it stale. That has happened
+      # twice in network-labs -- 4ffce424 removed the tri-site fixtures, 622c96b3 removed
+      # twenty more example directories -- and both times the consumers' tests were marked
+      # retired instead of the fixture being migrated.
+      #
+      # Migrating is content work with a modelling question per fixture, and the fixtures
+      # are network-labs' to own. So this reports: the run gets an annotation naming the
+      # fixture, the rule and the owning layer, and the job stays green. The debt is
+      # visible on every push without a person having to look for it.
+      - name: "Report fixtures on a superseded contract"
+        if: hashFiles('tests/check-obsolete-fixtures.sh') != ''
+        shell: bash
+        run: bash tests/check-obsolete-fixtures.sh
+
       - name: "The flake check gates every test job"
         shell: bash
         run: |
