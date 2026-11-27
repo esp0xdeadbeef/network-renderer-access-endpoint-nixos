@@ -1462,8 +1462,19 @@ jobs:
           # with "failed to execute /usr/bin/script: No such file or directory".
           if unshare -Urn true >/dev/null 2>&1; then
             netns="unshare -Urn"
-          elif sudo -n env "PATH=${PATH}" unshare -n true >/dev/null 2>&1; then
-            netns="sudo -n env PATH=${PATH} unshare -n"
+          elif sudo -n env "PATH=${PATH}" "NIX_PATH=${NIX_PATH:-}" unshare -n true >/dev/null 2>&1; then
+            # NIX_PATH TRAVELS WITH PATH, for the same reason and by the same mechanism.
+            # `sudo` scrubs the environment, so `import <nixpkgs>` inside the namespace
+            # resolved against nothing:
+            #
+            #   error: file 'nixpkgs/lib' was not found in the Nix search path
+            #          (add it using $NIX_PATH or -I)
+            #
+            # measured in network-control-plane-model run 45961240754, shard 5, case
+            # FS-530-HDS-010-SDS-010-SMS-010 -- while the job's own audit step reported
+            # PASS CACHE-NIXPATH, because the pin was set for the job and then dropped by
+            # sudo before the test ever ran.
+            netns="sudo -n env PATH=${PATH} NIX_PATH=${NIX_PATH:-} unshare -n"
           else
             echo "::error::this host gives no network namespace, so an offline run cannot be verified"
             exit 1
