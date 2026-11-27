@@ -142,7 +142,10 @@ in
 { networks = builtins.length (builtins.attrNames (result.systemd.network.networks or { })); }
 NIXEOF
 
-SN1_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn1-recovery.nix" 2>&1 || true)"
+# STDOUT ONLY: `2>&1` put Nix's offline warning in front of the JSON and jq reported a
+# parse error, which this reported as "recovery failed" -- a wrong answer rather than
+# unparseable input. Measured in run 45987322788.
+SN1_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn1-recovery.nix" 2>/dev/null || true)"
 if echo "$SN1_RECOVERY" | jq -e '.networks > 0' >/dev/null 2>&1; then
   pass "P1 (SN1 recovery) — after removing second native attachment, renderer produces valid output ($(echo "$SN1_RECOVERY" | jq '.networks') networks)"
 else
@@ -253,7 +256,10 @@ in
 { networks = builtins.length (builtins.attrNames (result.systemd.network.networks or { })); }
 NIXEOF
 
-SN2_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn2-recovery.nix" 2>&1 || true)"
+# STDOUT ONLY: `2>&1` put Nix's offline warning in front of the JSON and jq reported a
+# parse error, which this reported as "recovery failed" -- a wrong answer rather than
+# unparseable input. Measured in run 45987322788.
+SN2_RECOVERY="$(nix eval --impure --json -f "$SCRATCH/sn2-recovery.nix" 2>/dev/null || true)"
 if echo "$SN2_RECOVERY" | jq -e '.networks > 0' >/dev/null 2>&1; then
   pass "P2 (SN2 recovery) — with distinct VLAN IDs, renderer produces valid output ($(echo "$SN2_RECOVERY" | jq '.networks') networks)"
 else
