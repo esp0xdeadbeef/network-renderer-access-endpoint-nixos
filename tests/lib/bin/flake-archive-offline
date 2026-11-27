@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Drop-in for `nix flake archive --json <ref>` that never touches the network.
+#
+# `nix flake archive` copies EVERY input of a flake into the store, so for a
+# `github:owner/repo/<rev>` input it downloads archive/<rev>.tar.gz. With the store
+# closed and the network namespace up -- how the tests run -- that fails:
+#
+#   unpacking 'github:esp0xdeadbeef/network-compiler/22dbbbc...' into the Git cache...
+#   error: unable to download
+#     'https://github.com/esp0xdeadbeef/network-compiler/archive/22dbbbc....tar.gz':
+#     Could not resolve host: github.com
+#
+# and the revision that fails is not the test's: it comes from a sibling's lock. A
+# github: tarball and a git checkout of the same revision are DIFFERENT store paths, so
+# the sibling checkout CI already made can never satisfy it.
+#
+# CI checks out every sibling next to the repository under test, so an input's path is
+# that directory. Sibling-first; `nix flake archive` only when the sibling is absent (a
+# developer machine), which is the single case where resolving the locked graph is right.
+#
+# Output matches `nix flake archive --json` for the part the tests read:
+#   {"inputs": {"<name>": {"path": "<path>"}}, "path": "<flake root>"}
+set -euo pipefail
+
+ref=""
+for arg in "$@"; do
+  case "${arg}" in
+    path:*) ref="${arg}" ;;
+    --json|--no-write-lock-file|--no-update-lock-file) ;;
+    "") ;;
+  esac
+done
+[[ -n "${ref}" ]] || exec nix flake archive "$@"
+
+root="${ref#path:}"
+[[ -d "${root}" ]] || exec nix flake archive "$@"
+parent="$(cd "${root}/.." && pwd)"
+
+missing=0
+json="$(python3 - "${root}" "${parent}" <<'PY'
+import json, pathlib, sys
+
+root = pathlib.Path(sys.argv[1])
+parent = pathlib.Path(sys.argv[2])
+lock = root / "flake.lock"
+inputs = {}
+missing = 0
+if lock.is_file():
+    try:
+        nodes = json.loads(lock.read_text()).get("nodes", {})
+    except json.JSONDecodeError:
+        nodes = {}
+    for name in ((nodes.get("root") or {}).get("inputs") or {}):
+        sibling = parent / name
+        if (sibling / "flake.nix").is_file():
+            inputs[name] = {"path": str(sibling)}
+        else:
+            missing += 1
+print(json.dumps({"inputs": inputs, "path": str(root), "missing": missing}))
+PY
+)"
+
+missing="$(python3 -c 'import json,sys; print(json.load(sys.stdin).pop("missing"))' <<<"${json}")"
+if (( missing > 0 )); then
+  printf 'flake-archive-offline: %s input(s) have no sibling checkout; resolving them through nix flake archive\n' "${missing}" >&2
+  exec nix flake archive "$@"
+fi
+printf '%s\n' "${json}"

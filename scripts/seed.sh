@@ -45,7 +45,7 @@ resolve_flake_input_path() {
   archive_json="$(mktemp)"
   trap 'rm -f "$archive_json"' RETURN
 
-  nix flake archive --json "path:${repo_root}" >"${archive_json}"
+  flake-archive-offline --json "path:${repo_root}" >"${archive_json}"
 
   INPUT_NAME="${input_name}" ARCHIVE_JSON="${archive_json}" nix eval --impure --raw --expr '
     let

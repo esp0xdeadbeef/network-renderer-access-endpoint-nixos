@@ -2065,6 +2065,25 @@ jobs:
               env TEST_NAME="${TEST_NAME}" \
                   NETWORK_REPO_DIRECT_TEST_OK="${NETWORK_REPO_DIRECT_TEST_OK:-0}" \
                   NETWORK_REPO_SWEEP="${NETWORK_REPO_SWEEP:-0}" \
+              # `flake-archive-offline` ON PATH.
+              #
+              # The suites resolved flake inputs with `nix flake archive --json`, which
+              # copies every input into the store and therefore downloads
+              # `github:owner/repo/<rev>` tarballs. The rev that failed was not the
+              # test's -- it came from a sibling's lock, and a github: tarball and a git
+              # checkout of the same rev are different store paths, so the sibling CI
+              # already checked out could never satisfy it:
+              #
+              #   unpacking 'github:esp0xdeadbeef/network-compiler/22dbbbc...' into the Git cache...
+              #   error: unable to download
+              #     'https://github.com/esp0xdeadbeef/network-compiler/archive/22dbbbc....tar.gz':
+              #     Could not resolve host: github.com
+              #
+              # The shim answers from the sibling checkouts instead. Sibling tests inherit
+              # this PATH and the shim resolves from its argument, so one copy serves all.
+              if [[ -d tests/lib/bin ]]; then
+                export PATH="${PWD}/tests/lib/bin:${PATH}"
+              fi
               script -q -e -c 'bash tests/run-one.sh "tests/${TEST_NAME}"' "${RUNNER_TEMP}/run.log"
           fi
 
