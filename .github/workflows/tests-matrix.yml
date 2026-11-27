@@ -97,6 +97,88 @@ jobs:
       # A workflow cannot judge the run that contains it, but it can judge its
       # own structure, and that is the property: flake first, tests behind it.
       # ---------------------------------------------------------------------
+      # THE PIN RULES, AS A GATE.
+      #
+      # These four properties are what kept the cache missing, and every one of them was
+      # something a person had to remember:
+      #
+      #   no absolute rev in an input URL -- `github:owner/repo/<40-hex>` cannot be moved
+      #     by `nix flake update` (no branch to advance) nor by a consumer's `follows`
+      #     (different graph). Measured: copying the consumer's flake.lock over such a
+      #     flake does not move it either -- the URL wins.
+      #   no input declared but never used -- it drags a whole graph into every lock that
+      #     can reach it, and if it pins a rev, an unmovable one.
+      #   every input follows this repository's nixpkgs -- otherwise the pin is
+      #     one-directional: the consumer decides what it pulls, and the copy it pulls
+      #     pins its own. Measured both ways by pinning one side to an old rev.
+      #   every cycle-breaking `follows = ""` still pins nixpkgs -- that node keeps its
+      #     own world, and without this it keeps its own nixpkgs and stdenv too.
+      #
+      # Static, so it costs a second and cannot be defeated by a warm eval cache (which
+      # is what makes `nix eval --offline` useless as a detector).
+      - name: "Flake inputs are pinned the way the fleet requires"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PIN_CHECK'
+          import pathlib, re, sys
+
+          flake = pathlib.Path("flake.nix")
+          raw = flake.read_text()
+          # A rev quoted in an explanation is documentation, not a pin.
+          text = "\n".join(re.sub(r"(?<!\\)#.*$", "", l) for l in raw.splitlines())
+          failures = []
+
+          for m in re.finditer(r"github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{40}", text):
+              line = text[: m.start()].count("\n") + 1
+              failures.append(
+                  f'flake.nix:{line}: absolute rev in an input URL -- {m.group(0)}; use a '
+                  f'branch so `nix flake update` can move it and a consumer can follow it'
+              )
+
+          urls = list(re.finditer(r'^\s*([A-Za-z0-9_-]+)\.url\s*=\s*"', text, re.M))
+          body = re.sub(r'^\s*[A-Za-z0-9_.-]+\.url\s*=\s*"[^"]+"\s*;\s*$', "", text, flags=re.M)
+          tree = [f for f in pathlib.Path(".").rglob("*.nix") if f.name != "flake.nix"]
+          for m in urls:
+              name = m.group(1)
+              line = text[: m.start()].count("\n") + 1
+              used = re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_.-])", body)
+              if not used and not any(
+                  re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_.-])",
+                            f.read_text(errors="ignore"))
+                  for f in tree
+              ):
+                  failures.append(
+                      f'flake.nix:{line}: input `{name}` is declared but never used -- it adds a '
+                      f'whole graph to every lock that reaches it'
+                  )
+              if name != "nixpkgs" and f'{name}.inputs.nixpkgs.follows = "nixpkgs";' not in text:
+                  failures.append(
+                      f'flake.nix:{line}: `{name}` does not follow this repository\'s nixpkgs -- '
+                      f'add `{name}.inputs.nixpkgs.follows = "nixpkgs";` or the copy it brings '
+                      f'pins its own'
+                  )
+
+          for m in re.finditer(
+              r'^\s*([A-Za-z0-9_-]+)\.inputs\.network-labs\.follows\s*=\s*""\s*;', text, re.M
+          ):
+              outer = m.group(1)
+              if f'{outer}.inputs.network-labs.inputs.nixpkgs.follows = "nixpkgs";' not in text:
+                  line = text[: m.start()].count("\n") + 1
+                  failures.append(
+                      f'flake.nix:{line}: `{outer}.inputs.network-labs.follows = ""` breaks a cycle '
+                      f'but brings its own nixpkgs; add '
+                      f'`{outer}.inputs.network-labs.inputs.nixpkgs.follows = "nixpkgs";`'
+                  )
+
+          if failures:
+              print("FAIL PIN-RULES: the flake does not pin the way the fleet requires", file=sys.stderr)
+              for f in failures:
+                  print(f"  {f}", file=sys.stderr)
+              sys.exit(1)
+          print("PASS PIN-RULES: no absolute revs, no dead inputs, every input follows nixpkgs")
+          PIN_CHECK
+
       - name: "The flake check gates every test job"
         shell: bash
         run: |
