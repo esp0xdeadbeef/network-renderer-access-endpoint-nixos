@@ -66,7 +66,7 @@ if (( missing > 0 )); then
   #
   # A flake under test can pin a nixpkgs revision that no current lock in the fleet
   # names -- a fixture's own lock, or a sibling pinned at an older revision. There is no
-  # `../nixpkgs` directory to answer with, and the store holds one nixpkgs, so the real
+  # sibling nixpkgs directory to answer with, and the store holds one nixpkgs, so the real
   # `nix flake archive` would fetch archive/<rev>.tar.gz:
   #
   #   error: Failed to open archive (Source threw exception: error: unable to download
