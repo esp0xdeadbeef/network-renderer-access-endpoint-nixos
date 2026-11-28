@@ -941,10 +941,33 @@ jobs:
           # radvd). Non-attribute
           # fragments come out of this too -- `${system}`, `currentSystem}` -- and are
           # skipped when their evaluation fails, which costs one nix eval each.
+          #
+          # THE RENDERER'S GENERATED SCRIPTS ARE A THIRD CLASS, and they are not
+          # named in the tests. A test that reads
+          #
+          #   builtins.readFile cfg.systemd.services.<name>.serviceConfig.ExecStart
+          #
+          # forces `pkgs.writeShellScript` to build, and that script's body names
+          # ${pkgs.iproute2}/bin/ip, ${pkgs.python3Minimal}/bin/python3 and
+          # ${pkgs.coreutils}/bin/tr. When none of those is in the runner's store the
+          # whole build happens inside the namespace, where it cannot fetch, and the
+          # test dies with
+          #
+          #   error: Cannot build '/nix/store/...-s88-delegated-prefix-route-core-isp-3.drv'.
+          #   Reason: 1 dependency failed.
+          #
+          # measured in run 46084235343 on test-runtime-underlay-endpoint-source-routes
+          # and test-overlay-core-local-hostile-return-routes. The closure is small
+          # (40 paths for the s88 route script) but it contains curl, krb5 and
+          # python3-minimal, so nothing about it is free. They are warmed by name
+          # because a grep over `tests/` cannot see them: the references live in
+          # s88/, in the module that writes the script.
           mapfile -t shell_attrs < <(
             {
               grep -rhoE 'nixpkgs#[A-Za-z0-9._-]+' tests 2>/dev/null | sed 's/^nixpkgs#//'
               grep -rhoE 'legacyPackages\.[A-Za-z0-9.${}]+' tests 2>/dev/null | sed 's/.*\.//'
+              # Renderer-generated script toolchain (see the note above).
+              printf '%s\n' bash coreutils iproute2 python3Minimal
             } | grep -vE '^(\.\.\.|currentSystem\}?|withPackages|system\}?|x86.*|path)$' | sort -u || true)
           shell_done=0
           for attr in "${shell_attrs[@]}"; do
