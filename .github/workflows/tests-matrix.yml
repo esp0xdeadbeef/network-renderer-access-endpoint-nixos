@@ -1829,8 +1829,16 @@ jobs:
               continue
             fi
             attr="$(nix_attr "${pkg}")"
-            outs="$(nix build --no-link --print-out-paths "nixpkgs#${attr}" 2>/dev/null)" || {
-              echo "::warning::neither apt nor nixpkgs#${attr} provides '${pkg}'"
+            # `--inputs-from` is load-bearing: a bare `nixpkgs#sops` resolves through the
+            # flake REGISTRY, and on the runner that failed for every package --
+            #
+            #   neither apt nor nixpkgs#sops provides 'sops'
+            #
+            # (run 46118416614, the annotation from this very step). Asking for the
+            # package through THIS repository's own locked nixpkgs is also the version a
+            # developer has, which is what the tests were written against.
+            outs="$(nix build --inputs-from "${PWD}" --no-link --print-out-paths "nixpkgs#${attr}" 2>/dev/null)" || {
+              echo "::warning::neither apt nor this flake's nixpkgs#${attr} provides '${pkg}'"
               continue
             }
             linked=0
