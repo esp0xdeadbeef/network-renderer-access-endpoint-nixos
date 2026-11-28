@@ -1803,11 +1803,48 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          sudo apt-get update -qq || true
+          # APT FIRST, NIXPKGS WHEN APT HAS NOTHING.
+          #
+          # The runner image is the arbiter of what `apt-get` has, and it changes under us:
+          # `sops` is in the image's universe pocket on one release and absent on the next.
+          # Measured in run 46084235343 -- apt had no `sops`, the step printed its note, and
+          # two suites died at run time with
+          #
+          #     FAIL FS-540-HDS-010-SDS-010-SMS-035: missing required command: sops
+          #
+          # while this step was green. Falling back to the repository's own pinned nixpkgs
+          # makes the tool available regardless of the pocket, and the versions then match
+          # what a developer has.
+          tool_bin="${RUNNER_TEMP}/suite-tools"
+          mkdir -p "${tool_bin}"
+          nix_attr() {
+            case "$1" in
+              conntrack) echo "conntrack-tools" ;;
+              *) echo "$1" ;;
+            esac
+          }
           for pkg in age sops dnsutils nmap gron socat conntrack; do
-            sudo apt-get install -y -qq "${pkg}" >/dev/null 2>&1 \
-              || echo "no apt package '${pkg}' here; the assertion will name it if a suite needs it"
+            if sudo apt-get install -y -qq "${pkg}" >/dev/null 2>&1; then
+              echo "apt: ${pkg}"
+              continue
+            fi
+            attr="$(nix_attr "${pkg}")"
+            outs="$(nix build --no-link --print-out-paths "nixpkgs#${attr}" 2>/dev/null)" || {
+              echo "::warning::neither apt nor nixpkgs#${attr} provides '${pkg}'"
+              continue
+            }
+            linked=0
+            while read -r out; do
+              [[ -n "${out}" && -d "${out}/bin" ]] || continue
+              for exe in "${out}"/bin/*; do
+                ln -sf "${exe}" "${tool_bin}/" 2>/dev/null && linked=1
+              done
+            done <<<"${outs}"
+            echo "nixpkgs#${attr}: ${pkg} (${linked})"
           done
+          if [[ -n "$(ls -A "${tool_bin}" 2>/dev/null)" ]]; then
+            printf 'PATH=%s:%s\n' "${tool_bin}" "${PATH}" >> "$GITHUB_ENV"
+          fi
 
       - name: "Assert the flake declares every tool the tests use"
         shell: bash
